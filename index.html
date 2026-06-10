@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Noelle West Rental Calculator</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
+</head>
+<body>
+
+<div class="app-shell">
+
+  <!-- Header -->
+  <div class="app-header">
+    <h1>Noelle West Rental Calculator</h1>
+    <p>Select items to build your rental summary</p>
+  </div>
+
+  <!-- Add Item Card -->
+  <div class="card">
+    <div class="card-title">Add Item</div>
+
+    <!-- Tab bar -->
+    <div class="tab-bar">
+      <button class="tab-btn active" id="tab-tracked" onclick="switchTab('tracked')">
+        Tracked Inventory
+      </button>
+      <button class="tab-btn" id="tab-qty" onclick="switchTab('quantity')">
+        Quantity Inventory
+      </button>
+    </div>
+
+    <!-- Tracked Panel -->
+    <div id="panel-tracked"></div>
+
+    <!-- Quantity Panel -->
+    <div id="panel-qty" style="display:none"></div>
+  </div>
+
+  <!-- Total -->
+  <div class="total-card">
+    <div class="total-label">Rental Total</div>
+    <div class="total-amount" id="total-amount">₱0</div>
+    <div class="total-count" id="total-count">0 items</div>
+  </div>
+
+  <!-- Items rented -->
+  <div class="card">
+    <div class="card-title">
+      Items Rented
+      <span class="badge" id="items-badge">0</span>
+    </div>
+    <div class="items-empty" id="items-empty" style="display:block">
+      No items added yet. Use the form above to get started.
+    </div>
+    <div id="items-list"></div>
+  </div>
+
+</div>
+
+<script src="app.js"></script>
+<script>
+  // Keep badge in sync
+  const origRender = renderItems;
+  // Patch items badge update after load
+  const _observer = new MutationObserver(() => {
+    const badge = document.getElementById('items-badge');
+    if (badge) badge.textContent = state.items.length;
+  });
+  document.addEventListener('DOMContentLoaded', () => {
+    const list = document.getElementById('items-list');
+    if (list) _observer.observe(list, { childList: true, subtree: true });
+  });
+</script>
+</body>
+</html>

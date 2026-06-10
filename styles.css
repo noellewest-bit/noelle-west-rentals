@@ -1,0 +1,522 @@
+/* ===== Noelle West Rental Calculator ===== */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg: #F0EEF6;
+  --surface: #FFFFFF;
+  --surface-2: #F8F7FC;
+  --border: #E2DFF0;
+  --accent: #6B4FA8;
+  --accent-light: #EDE8F8;
+  --accent-dark: #50398A;
+  --text: #1A1525;
+  --text-muted: #7B6F94;
+  --success: #2E7D5E;
+  --success-bg: #E8F5F0;
+  --danger: #C0392B;
+  --danger-bg: #FDECEA;
+  --radius-sm: 8px;
+  --radius: 14px;
+  --radius-lg: 20px;
+  --shadow: 0 2px 12px rgba(107, 79, 168, 0.08);
+  --shadow-md: 0 4px 24px rgba(107, 79, 168, 0.12);
+}
+
+html, body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+/* ===== Layout ===== */
+.app-shell {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.app-header {
+  text-align: center;
+  margin-bottom: 20px;
+  padding: 20px 16px 16px;
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+}
+
+.app-header h1 {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: -0.3px;
+}
+
+.app-header p {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 3px;
+}
+
+/* ===== Cards ===== */
+.card {
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 18px;
+  margin-bottom: 14px;
+}
+
+.card-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.card-title .badge {
+  background: var(--accent-light);
+  color: var(--accent);
+  border-radius: 20px;
+  padding: 1px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+}
+
+/* ===== Form Controls ===== */
+.form-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.field-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 5px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.field-group {
+  display: flex;
+  flex-direction: column;
+}
+
+select, input[type="number"], .search-input {
+  width: 100%;
+  padding: 9px 12px;
+  background: var(--surface-2);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  transition: border-color 0.15s, box-shadow 0.15s;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%237B6F94' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 28px;
+  cursor: pointer;
+}
+
+select:focus, input[type="number"]:focus, .search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(107, 79, 168, 0.1);
+  background: var(--surface);
+}
+
+input[type="number"] {
+  text-align: center;
+}
+
+/* ===== Searchable Dropdown ===== */
+.search-container {
+  position: relative;
+}
+
+.search-input {
+  display: block;
+}
+
+.search-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: var(--surface);
+  border: 1.5px solid var(--accent);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  z-index: 100;
+  max-height: 200px;
+  overflow-y: auto;
+  display: none;
+}
+
+.search-dropdown.open {
+  display: block;
+}
+
+.dropdown-item {
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+  transition: background 0.1s;
+}
+
+.dropdown-item:last-child {
+  border-bottom: none;
+}
+
+.dropdown-item:hover, .dropdown-item.active {
+  background: var(--accent-light);
+  color: var(--accent);
+}
+
+.dropdown-item.no-results {
+  color: var(--text-muted);
+  cursor: default;
+  font-style: italic;
+  font-size: 12px;
+}
+
+/* ===== Rate Preview ===== */
+.rate-preview {
+  background: var(--accent-light);
+  border: 1.5px solid rgba(107, 79, 168, 0.2);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 40px;
+}
+
+.rate-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.rate-value {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.rate-value.empty {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+/* ===== Inline Row (Category + Size + Qty) ===== */
+.input-row {
+  display: grid;
+  gap: 8px;
+}
+
+.input-row.tracked-layout {
+  grid-template-columns: 1fr;
+}
+
+.input-row.qty-layout {
+  grid-template-columns: 1fr 1fr;
+}
+
+/* ===== Add Button ===== */
+.btn-add {
+  width: 100%;
+  padding: 11px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+  margin-top: 2px;
+}
+
+.btn-add:hover {
+  background: var(--accent-dark);
+}
+
+.btn-add:active {
+  transform: scale(0.98);
+}
+
+.btn-add:disabled {
+  background: var(--border);
+  color: var(--text-muted);
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ===== Items List ===== */
+.items-empty {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 20px 0 8px;
+  font-style: italic;
+}
+
+.rental-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  margin-bottom: 7px;
+  transition: background 0.1s;
+}
+
+.rental-item:last-child {
+  margin-bottom: 0;
+}
+
+.item-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.item-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.item-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 1px;
+}
+
+.item-amount {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.btn-remove {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 16px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  transition: color 0.1s, background 0.1s;
+  line-height: 1;
+}
+
+.btn-remove:hover {
+  color: var(--danger);
+  background: var(--danger-bg);
+}
+
+/* ===== Total Card ===== */
+.total-card {
+  background: var(--accent);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 14px;
+  box-shadow: var(--shadow-md);
+}
+
+.total-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.7);
+  margin-bottom: 6px;
+}
+
+.total-amount {
+  font-size: 32px;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: -1px;
+}
+
+.total-count {
+  font-size: 12px;
+  color: rgba(255,255,255,0.6);
+  margin-top: 4px;
+}
+
+/* ===== Tab Switcher ===== */
+.tab-bar {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.tab-btn {
+  padding: 9px;
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: center;
+}
+
+.tab-btn.active {
+  background: var(--accent-light);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ===== Divider ===== */
+.divider {
+  height: 1px;
+  background: var(--border);
+  margin: 14px 0;
+}
+
+/* ===== Error toast ===== */
+.error-msg {
+  background: var(--danger-bg);
+  border: 1px solid rgba(192,57,43,0.2);
+  color: var(--danger);
+  font-size: 12px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  margin-top: 8px;
+  display: none;
+}
+
+.error-msg.visible {
+  display: block;
+}
+
+/* ===== Responsive ===== */
+@media (max-width: 480px) {
+  .app-shell { padding: 10px; }
+  .card { padding: 14px; }
+  .total-amount { font-size: 26px; }
+}
+
+/* ===== Price Selector (First User / Rental Rate toggle) ===== */
+.price-selector {
+  margin-top: 2px;
+}
+
+.price-toggle-group {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.price-toggle-option {
+  cursor: pointer;
+  display: block;
+}
+
+.price-toggle-option input[type="radio"] {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.price-toggle-card {
+  padding: 10px 12px;
+  border: 2px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  text-align: center;
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+  user-select: none;
+}
+
+.price-toggle-option input[type="radio"]:checked + .price-toggle-card {
+  border-color: var(--accent);
+  background: var(--accent-light);
+  box-shadow: 0 0 0 3px rgba(107, 79, 168, 0.1);
+}
+
+.price-toggle-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.price-toggle-option input[type="radio"]:checked + .price-toggle-card .price-toggle-label {
+  color: var(--accent-dark);
+}
+
+.price-toggle-amount {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.3px;
+}
+
+.price-toggle-option input[type="radio"]:checked + .price-toggle-card .price-toggle-amount {
+  color: var(--accent);
+}
+
+/* ===== First User badge on item rows ===== */
+.fu-tag {
+  display: inline-block;
+  background: #FFF3CD;
+  color: #856404;
+  border: 1px solid #FFE083;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  letter-spacing: 0.3px;
+  vertical-align: middle;
+  margin-left: 4px;
+  line-height: 1.4;
+}
