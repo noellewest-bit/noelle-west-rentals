@@ -39,6 +39,12 @@ const state = {
    ───────────────────────────────────────────── */
 function money(n) {
   if (n == null || isNaN(n)) return '—';
+  if (n === 0) return '₱0 (FREE)';
+  return '₱' + Number(n).toLocaleString('en-PH', {minimumFractionDigits:0, maximumFractionDigits:0});
+}
+function moneyItem(n) {
+  // For item amounts: show ₱0 without FREE label
+  if (n == null || isNaN(n)) return '₱0';
   return '₱' + Number(n).toLocaleString('en-PH', {minimumFractionDigits:0, maximumFractionDigits:0});
 }
 function moneyPlain(n) {
@@ -54,10 +60,12 @@ function showError(el, msg) {
   setTimeout(() => el.classList.remove('visible'), 3500);
 }
 function cleanPrice(raw) {
-  if (raw == null || raw === '') return null;
+  if (raw == null) return null;
   const s = String(raw).replace(/[₱,\s]/g,'').trim();
+  if (s === '' || s.toLowerCase() === 'nan') return null;
   const f = parseFloat(s);
-  return (!isNaN(f) && f >= 0) ? f : null;  // 0 is valid (free item)
+  if (isNaN(f)) return null;
+  return f >= 0 ? f : null;  // 0 is valid (free item)
 }
 
 /* ─────────────────────────────────────────────
@@ -610,7 +618,7 @@ function renderItems() {
           <div class="item-name">${escHtml(label)} ${fuTag}</div>
           <div class="item-meta">${escHtml(meta)}</div>
         </div>
-        <div class="item-amount">${money(item.amount)}</div>
+        <div class="item-amount">${moneyItem(item.amount)}</div>
         <button class="btn-remove" data-id="${item.id}" title="Remove">✕</button>
       </div>`;
   }).join('');
