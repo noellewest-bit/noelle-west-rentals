@@ -1,59 +1,286 @@
 /* ===== Noelle West Rental Calculator - app.js ===== */
+/* Data source: Google Sheets (live) with localStorage fallback  */
 
 window.latestSubmissionText = '';
 
-/* ---------- State ---------- */
+/* ─────────────────────────────────────────────
+   CONFIGURATION
+   ───────────────────────────────────────────── */
+const SHEET_ID   = '1-QD9UJ99Rjl1JPlBdKPo7hz5MBOiJKkMyD-qWlD520s';
+const CACHE_KEY  = 'nw_rental_cache';
+const CACHE_TTL  = 5 * 60 * 1000; // 5 minutes
+
+/* Category type rules
+   – TRACKED: individual items, no duplicates, searchable dropdown
+   – QUANTITY: size+qty workflow, merging, repeatable               */
+const TRACKED_CATS = [
+  "BGI","BGS","PGI","PGS","PGC","FIL","MG","CD","MS","CS","S-UPPER"
+  // PET sheet items are TRACKED (PET-01, PET-02 …) — handled dynamically
+];
+const QTY_CATS = [
+  "BCPO","BOY","BPSC","BPO","BPOL","BPS","COAT BARONG","BCC","BPOC",
+  "VST","POLO","ACC","PEN","PANTS",
+  "MOH","BMG","FGG",   // new quantity sheets
+  "PET"                // PET sheet (whole category) = quantity
+];
+
+// PET-# individual items are TRACKED even though the PET sheet is quantity.
+// We detect them by name pattern: starts with "PET-" followed by digits.
+function isPetTracked(name) {
+  return /^PET-\d/i.test(name);
+}
+
+/* ─────────────────────────────────────────────
+   STATE
+   ───────────────────────────────────────────── */
 const state = {
   items:       [],
-  masterItems: [],
-  sizesMap:    {},
-  activeTab:   'tracked'
+  masterItems: [],   // [{category, name, rentalRate, retailPrice, firstUserPrice, type}]
+  activeTab:   'tracked',
+  loading:     true,
+  error:       null
 };
 
-/* ---------- Constants ---------- */
-const TRACKED_CATS = ["BGI","BGS","PGI","PGS","PGC","FIL","MG","CD","MS","CS","PET","S-UPPER"];
-const QTY_CATS     = ["BCPO","BOY","BPSC","BPO","BPOL","BPS","COAT BARONG","BCC","BPOC","VST","POLO","ACC","PEN","PANTS"];
-
-/* ---------- Utility ---------- */
+/* ─────────────────────────────────────────────
+   UTILITIES
+   ───────────────────────────────────────────── */
 function money(n) {
-  if (n === null || n === undefined || isNaN(n)) return '—';
-  return '₱' + Number(n).toLocaleString('en-PH', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  if (n == null || isNaN(n)) return '—';
+  return '₱' + Number(n).toLocaleString('en-PH', {minimumFractionDigits:0, maximumFractionDigits:0});
 }
-function uid()      { return Math.random().toString(36).slice(2, 9); }
+function moneyPlain(n) {
+  if (n == null || isNaN(n)) return '0.00';
+  return Number(n).toLocaleString('en-PH', {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+function uid()      { return Math.random().toString(36).slice(2,9); }
 function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function escAttr(s) { return escHtml(s); }
 function showError(el, msg) {
   el.textContent = msg;
   el.classList.add('visible');
-  setTimeout(() => el.classList.remove('visible'), 3000);
+  setTimeout(() => el.classList.remove('visible'), 3500);
+}
+function cleanPrice(raw) {
+  if (raw == null || raw === '') return null;
+  const s = String(raw).replace(/[₱,\s]/g,'').trim();
+  const f = parseFloat(s);
+  return (!isNaN(f) && f > 0) ? f : null;
 }
 
-/* ---------- Load Data ---------- */
+/* ─────────────────────────────────────────────
+   GOOGLE SHEETS → DATA
+   ───────────────────────────────────────────── */
+
+/* Fetch one sheet tab as CSV and parse rows */
+async function fetchSheetCSV(sheetName) {
+  // URL-encode the sheet name for the gid lookup via the named range trick
+  // Use the visible sheet name export approach
+  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
+  const res  = await fetch(url);
+  if (!res.ok) throw new Error(`Sheet "${sheetName}" fetch failed: ${res.status}`);
+  const text = await res.text();
+  return parseCSV(text);
+}
+
+/* Minimal but robust CSV parser (handles quoted fields with commas/newlines) */
+function parseCSV(text) {
+  const rows = [];
+  let row = [], field = '', inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i], n = text[i+1];
+    if (inQ) {
+      if (c === '"' && n === '"') { field += '"'; i++; }
+      else if (c === '"')          { inQ = false; }
+      else                         { field += c; }
+    } else {
+      if      (c === '"')          { inQ = true; }
+      else if (c === ',')          { row.push(field.trim()); field = ''; }
+      else if (c === '\n' || (c === '\r' && n === '\n')) {
+        if (c === '\r') i++;
+        row.push(field.trim()); rows.push(row); row = []; field = '';
+      } else { field += c; }
+    }
+  }
+  if (field || row.length) { row.push(field.trim()); rows.push(row); }
+  return rows.filter(r => r.some(c => c !== ''));
+}
+
+/* Get the list of visible sheet names from the spreadsheet */
+async function fetchSheetNames() {
+  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json`;
+  const res  = await fetch(url);
+  const text = await res.text();
+  // Strip Google's JSONP wrapper: /*O_o*/\ngoogle.visualization.Query.setResponse({...});
+  const json = JSON.parse(text.replace(/^[^{]*/, '').replace(/\);?\s*$/, ''));
+  return json.table?.cols ? null : null; // not the right endpoint for sheet names
+}
+
+/* Build master item list by fetching each known sheet */
+async function loadFromGoogleSheets() {
+  // We know the sheet names from the workbook + new additions
+  const ALL_SHEETS = [
+    // Tracked
+    "BGS","BGI","PGS","PGI","PGC","FIL","MG","CD","MS","CS","S-UPPER",
+    // Quantity (original)
+    "BCPO","BOY","BPSC","BPO","BPOL","BPS","COAT BARONG","BCC","BPOC",
+    "VST","POLO","ACC","PEN","PANTS",
+    // PET sheet (quantity, but items named PET-# become tracked)
+    "PET",
+    // New quantity sheets
+    "MOH","BMG","FGG"
+  ];
+
+  const masterItems = [];
+
+  await Promise.allSettled(ALL_SHEETS.map(async (sheetName) => {
+    let rows;
+    try {
+      rows = await fetchSheetCSV(sheetName);
+    } catch(e) {
+      console.warn(`Skipping sheet "${sheetName}":`, e.message);
+      return;
+    }
+    if (!rows.length) return;
+
+    // First row = headers
+    const headers = rows[0].map(h => h.toUpperCase().trim());
+    const nameCol   = 0; // always col A
+    let rentalCol   = -1, retailCol = -1, fuCol = -1;
+
+    headers.forEach((h, i) => {
+      if (h.includes('RENTAL') && h.includes('RATE'))  rentalCol = i;
+      if (h.includes('RETAIL') && h.includes('PRICE')) retailCol = i;
+      if (h.includes('FIRST')  && h.includes('USER'))  fuCol     = i;
+    });
+
+    // Determine base type for this sheet
+    const isQtySheet = QTY_CATS.includes(sheetName);
+
+    for (let r = 1; r < rows.length; r++) {
+      const row  = rows[r];
+      const name = row[nameCol]?.trim();
+      if (!name) continue;
+
+      const rentalRate     = rentalCol >= 0 ? cleanPrice(row[rentalCol]) : null;
+      const retailPrice    = retailCol >= 0 ? cleanPrice(row[retailCol]) : null;
+      const firstUserPrice = fuCol     >= 0 ? cleanPrice(row[fuCol])     : null;
+
+      // Special rule: PET sheet items named PET-## are TRACKED
+      let type;
+      if (sheetName === 'PET' && isPetTracked(name)) {
+        type = 'TRACKED';
+      } else if (isQtySheet) {
+        type = 'QUANTITY';
+      } else {
+        type = 'TRACKED';
+      }
+
+      masterItems.push({ category: sheetName, name, rentalRate, retailPrice, firstUserPrice, type });
+    }
+  }));
+
+  return masterItems;
+}
+
+/* ─────────────────────────────────────────────
+   CACHE (localStorage)
+   ───────────────────────────────────────────── */
+function saveCache(items) {
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), items }));
+  } catch(e) {}
+}
+function loadCache() {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    const { ts, items } = JSON.parse(raw);
+    if (Date.now() - ts > CACHE_TTL) return null;
+    return items;
+  } catch(e) { return null; }
+}
+
+/* ─────────────────────────────────────────────
+   BOOT / LOAD DATA
+   ───────────────────────────────────────────── */
 async function loadData() {
-  const [itemsRes, sizesRes] = await Promise.all([
-    fetch('master-items.json'),
-    fetch('sizes.json')
-  ]);
-  state.masterItems = await itemsRes.json();
-  state.sizesMap    = await sizesRes.json();
-  init();
+  showLoadingState(true);
+
+  // Try cache first for instant render
+  const cached = loadCache();
+  if (cached && cached.length) {
+    state.masterItems = cached;
+    state.loading = false;
+    init();
+    showLoadingState(false);
+    // Then refresh in background
+    refreshInBackground();
+    return;
+  }
+
+  // No cache — fetch live
+  try {
+    state.masterItems = await loadFromGoogleSheets();
+    saveCache(state.masterItems);
+    state.loading = false;
+    showLoadingState(false);
+    init();
+  } catch(e) {
+    console.error('Failed to load from Google Sheets:', e);
+    showLoadingState(false, 'Could not load inventory. Please refresh.');
+  }
 }
 
-/* ---------- Init ---------- */
+async function refreshInBackground() {
+  try {
+    const fresh = await loadFromGoogleSheets();
+    if (fresh.length) {
+      state.masterItems = fresh;
+      saveCache(fresh);
+      // Rebuild panels silently if user hasn't started adding items
+      if (state.items.length === 0) {
+        buildTrackedPanel();
+        buildQuantityPanel();
+        switchTab(state.activeTab);
+      }
+    }
+  } catch(e) { /* silent fail */ }
+}
+
+function showLoadingState(loading, errorMsg) {
+  const el = document.getElementById('loading-state');
+  if (!el) return;
+  if (loading) {
+    el.innerHTML = `<div class="loading-spinner">Loading inventory from Google Sheets…</div>`;
+    el.style.display = 'block';
+  } else if (errorMsg) {
+    el.innerHTML = `<div class="loading-error">⚠️ ${errorMsg}</div>`;
+    el.style.display = 'block';
+  } else {
+    el.style.display = 'none';
+  }
+}
+
+/* ─────────────────────────────────────────────
+   INIT
+   ───────────────────────────────────────────── */
 function init() {
   buildTrackedPanel();
   buildQuantityPanel();
   switchTab(state.activeTab);
   renderItems();
+
   if (window.JFCustomWidget) {
     JFCustomWidget.subscribe('submit', function() {
-      updateJotform(); // ensure latest text is flushed
+      updateJotform();
       JFCustomWidget.sendSubmit({ valid: true, value: window.latestSubmissionText || 'No items selected' });
     });
   }
 }
 
-/* ---------- Tab switching ---------- */
+/* ─────────────────────────────────────────────
+   TAB SWITCHING
+   ───────────────────────────────────────────── */
 function switchTab(tab) {
   state.activeTab = tab;
   document.getElementById('tab-tracked').classList.toggle('active', tab === 'tracked');
@@ -62,14 +289,18 @@ function switchTab(tab) {
   document.getElementById('panel-qty').style.display     = tab === 'quantity' ? 'block' : 'none';
 }
 
-/* =============================================
+/* ─────────────────────────────────────────────
    TRACKED PANEL
-   ============================================= */
+   ───────────────────────────────────────────── */
 function buildTrackedPanel() {
   const panel = document.getElementById('panel-tracked');
 
-  const catOpts = TRACKED_CATS
-    .filter(c => state.masterItems.some(i => i.category === c))
+  // All TRACKED items (includes PET-# items from PET sheet)
+  const trackedCats = [...new Set(
+    state.masterItems.filter(i => i.type === 'TRACKED').map(i => i.category)
+  )].sort();
+
+  const catOpts = trackedCats
     .map(c => `<option value="${c}">${c}</option>`)
     .join('');
 
@@ -91,7 +322,6 @@ function buildTrackedPanel() {
         </div>
       </div>
 
-      <!-- Pricing selector: hidden until item with FU price is selected -->
       <div id="t-price-selector" class="price-selector" style="display:none">
         <div class="field-label">Pricing Type</div>
         <div class="price-toggle-group">
@@ -112,7 +342,6 @@ function buildTrackedPanel() {
         </div>
       </div>
 
-      <!-- Rate preview: shown when item has NO FU price (rental only) -->
       <div class="rate-preview" id="t-rate-preview">
         <span class="rate-label">Rental Rate</span>
         <span class="rate-value empty" id="t-rate-val">Select an item</span>
@@ -125,27 +354,27 @@ function buildTrackedPanel() {
 
   let selectedItem = null;
 
-  const catEl        = document.getElementById('t-category');
-  const searchEl     = document.getElementById('t-search');
-  const dropEl       = document.getElementById('t-dropdown');
-  const ratePreview  = document.getElementById('t-rate-preview');
-  const rateEl       = document.getElementById('t-rate-val');
-  const priceSelEl   = document.getElementById('t-price-selector');
-  const rentalDisp   = document.getElementById('t-rental-display');
-  const fuDisp       = document.getElementById('t-fu-display');
-  const addBtn       = document.getElementById('t-add-btn');
-  const errorEl      = document.getElementById('t-error');
+  const catEl       = document.getElementById('t-category');
+  const searchEl    = document.getElementById('t-search');
+  const dropEl      = document.getElementById('t-dropdown');
+  const ratePreview = document.getElementById('t-rate-preview');
+  const rateEl      = document.getElementById('t-rate-val');
+  const priceSelEl  = document.getElementById('t-price-selector');
+  const rentalDisp  = document.getElementById('t-rental-display');
+  const fuDisp      = document.getElementById('t-fu-display');
+  const addBtn      = document.getElementById('t-add-btn');
+  const errorEl     = document.getElementById('t-error');
 
   function getAvailableItems(cat) {
-    const usedNames = state.items
-      .filter(i => i.type === 'TRACKED' && i.category === cat)
-      .map(i => i.name);
-    return state.masterItems.filter(i => i.category === cat && !usedNames.includes(i.name));
+    const used = new Set(
+      state.items.filter(i => i.type === 'TRACKED' && i.category === cat).map(i => i.name)
+    );
+    return state.masterItems.filter(i => i.type === 'TRACKED' && i.category === cat && !used.has(i.name));
   }
 
   function renderDropdown(items) {
     dropEl.innerHTML = items.length
-      ? items.slice(0, 120).map(i =>
+      ? items.slice(0, 150).map(i =>
           `<div class="dropdown-item" data-name="${escAttr(i.name)}">${escHtml(i.name)}</div>`
         ).join('')
       : '<div class="dropdown-item no-results">No items found</div>';
@@ -160,20 +389,17 @@ function buildTrackedPanel() {
     closeDropdown();
     errorEl.classList.remove('visible');
 
-    const hasRental = item.rentalRate && item.rentalRate > 0;
-    const hasFU     = item.firstUserPrice && item.firstUserPrice > 0;
+    const hasRental = item.rentalRate > 0;
+    const hasFU     = item.firstUserPrice > 0;
 
     if (hasFU) {
-      // Show toggle selector, hide simple preview
       ratePreview.style.display = 'none';
       priceSelEl.style.display  = 'block';
       rentalDisp.textContent = hasRental ? money(item.rentalRate) : 'No rate';
       fuDisp.textContent     = money(item.firstUserPrice);
-      // Default to rental rate radio
       panel.querySelector('input[name="t-price-type"][value="rental"]').checked = true;
       addBtn.disabled = !hasRental;
     } else {
-      // Simple preview only
       ratePreview.style.display = '';
       priceSelEl.style.display  = 'none';
       rateEl.textContent = hasRental ? money(item.rentalRate) : 'No rate set';
@@ -212,14 +438,13 @@ function buildTrackedPanel() {
     addBtn.disabled = true;
     rateEl.textContent = 'Select an item';
     rateEl.classList.add('empty');
-    priceSelEl.style.display = 'none';
+    priceSelEl.style.display  = 'none';
     ratePreview.style.display = '';
     const cat = catEl.value;
     if (!cat) return;
     const q = searchEl.value.trim().toLowerCase();
     const available = getAvailableItems(cat);
-    const filtered = q ? available.filter(i => i.name.toLowerCase().includes(q)) : available;
-    renderDropdown(filtered);
+    renderDropdown(q ? available.filter(i => i.name.toLowerCase().includes(q)) : available);
   });
 
   searchEl.addEventListener('focus', () => {
@@ -227,67 +452,52 @@ function buildTrackedPanel() {
     if (!cat) return;
     const q = searchEl.value.trim().toLowerCase();
     const available = getAvailableItems(cat);
-    const filtered = q ? available.filter(i => i.name.toLowerCase().includes(q)) : available;
-    renderDropdown(filtered);
+    renderDropdown(q ? available.filter(i => i.name.toLowerCase().includes(q)) : available);
   });
 
   dropEl.addEventListener('mousedown', (e) => {
     const itEl = e.target.closest('.dropdown-item');
     if (!itEl || itEl.classList.contains('no-results')) return;
-    const name = itEl.dataset.name;
-    const item = state.masterItems.find(i => i.category === catEl.value && i.name === name);
+    const item = state.masterItems.find(
+      i => i.type === 'TRACKED' && i.category === catEl.value && i.name === itEl.dataset.name
+    );
     if (item) selectItem(item);
   });
 
   document.addEventListener('click', (e) => {
-    if (!document.getElementById('t-search-wrap').contains(e.target)) closeDropdown();
+    if (!document.getElementById('t-search-wrap')?.contains(e.target)) closeDropdown();
   });
 
-  // Radio change: re-validate add button
   priceSelEl.addEventListener('change', (e) => {
     if (!selectedItem || !e.target.matches('input[name="t-price-type"]')) return;
-    const type = e.target.value;
-    if (type === 'rental') {
-      addBtn.disabled = !(selectedItem.rentalRate && selectedItem.rentalRate > 0);
-    } else {
-      addBtn.disabled = !(selectedItem.firstUserPrice && selectedItem.firstUserPrice > 0);
-    }
+    addBtn.disabled = e.target.value === 'rental'
+      ? !(selectedItem.rentalRate > 0)
+      : !(selectedItem.firstUserPrice > 0);
   });
 
   addBtn.addEventListener('click', () => {
     if (!selectedItem) return;
-    const alreadyAdded = state.items.some(
-      i => i.type === 'TRACKED' && i.category === selectedItem.category && i.name === selectedItem.name
-    );
-    if (alreadyAdded) { showError(errorEl, `${selectedItem.name} is already in the list.`); return; }
+    if (state.items.some(i => i.type === 'TRACKED' && i.category === selectedItem.category && i.name === selectedItem.name)) {
+      showError(errorEl, `${selectedItem.name} is already in the list.`);
+      return;
+    }
 
-    // Determine chosen rate
-    const hasFU = selectedItem.firstUserPrice && selectedItem.firstUserPrice > 0;
+    const hasFU = selectedItem.firstUserPrice > 0;
     let chosenRate, pricingLabel;
     if (hasFU) {
       const sel = panel.querySelector('input[name="t-price-type"]:checked');
-      if (sel && sel.value === 'firstUser') {
-        chosenRate   = selectedItem.firstUserPrice;
-        pricingLabel = 'First User';
+      if (sel?.value === 'firstUser') {
+        chosenRate = selectedItem.firstUserPrice; pricingLabel = 'First User';
       } else {
-        chosenRate   = selectedItem.rentalRate;
-        pricingLabel = 'Rental Rate';
+        chosenRate = selectedItem.rentalRate; pricingLabel = 'Rental Rate';
       }
     } else {
-      chosenRate   = selectedItem.rentalRate;
-      pricingLabel = 'Rental Rate';
+      chosenRate = selectedItem.rentalRate; pricingLabel = 'Rental Rate';
     }
 
     state.items.push({
-      id:           uid(),
-      category:     selectedItem.category,
-      name:         selectedItem.name,
-      displayName:  selectedItem.name,
-      rentalRate:   chosenRate,
-      pricingLabel: pricingLabel,
-      quantity:     1,
-      amount:       chosenRate,
-      type:         'TRACKED'
+      id: uid(), category: selectedItem.category, name: selectedItem.name,
+      rentalRate: chosenRate, pricingLabel, quantity: 1, amount: chosenRate, type: 'TRACKED'
     });
 
     resetPanel();
@@ -295,14 +505,18 @@ function buildTrackedPanel() {
   });
 }
 
-/* =============================================
+/* ─────────────────────────────────────────────
    QUANTITY PANEL
-   ============================================= */
+   ───────────────────────────────────────────── */
 function buildQuantityPanel() {
   const panel = document.getElementById('panel-qty');
 
-  const catOpts = QTY_CATS
-    .filter(c => state.masterItems.some(i => i.category === c))
+  // All QUANTITY items — dedupe categories, keep order
+  const qtyCats = [...new Set(
+    state.masterItems.filter(i => i.type === 'QUANTITY').map(i => i.category)
+  )];
+
+  const catOpts = qtyCats
     .map(c => `<option value="${c}">${c}</option>`)
     .join('');
 
@@ -319,7 +533,7 @@ function buildQuantityPanel() {
         <div class="field-group">
           <div class="field-label">Size / Variant</div>
           <select id="q-size" disabled>
-            <option value="">— Select size —</option>
+            <option value="">— Select —</option>
           </select>
         </div>
       </div>
@@ -329,7 +543,7 @@ function buildQuantityPanel() {
         <input type="number" id="q-qty" min="1" value="1" disabled>
       </div>
 
-      <div class="rate-preview" id="q-rate-preview">
+      <div class="rate-preview">
         <span class="rate-label">Rental Rate</span>
         <span class="rate-value empty" id="q-rate-val">Select an item</span>
       </div>
@@ -349,7 +563,7 @@ function buildQuantityPanel() {
 
   catEl.addEventListener('change', () => {
     const cat = catEl.value;
-    sizeEl.innerHTML = '<option value="">— Select size —</option>';
+    sizeEl.innerHTML = '<option value="">— Select —</option>';
     sizeEl.disabled = !cat;
     qtyEl.disabled = true;
     addBtn.disabled = true;
@@ -357,7 +571,7 @@ function buildQuantityPanel() {
     rateEl.textContent = 'Select an item';
     rateEl.classList.add('empty');
     if (!cat) return;
-    state.masterItems.filter(i => i.category === cat).forEach(i => {
+    state.masterItems.filter(i => i.type === 'QUANTITY' && i.category === cat).forEach(i => {
       const opt = document.createElement('option');
       opt.value = i.name;
       opt.textContent = i.name;
@@ -376,7 +590,9 @@ function buildQuantityPanel() {
       addBtn.disabled = true;
       return;
     }
-    selectedQtyItem = state.masterItems.find(i => i.category === catEl.value && i.name === name);
+    selectedQtyItem = state.masterItems.find(
+      i => i.type === 'QUANTITY' && i.category === catEl.value && i.name === name
+    );
     if (selectedQtyItem) {
       const rate = selectedQtyItem.rentalRate;
       rateEl.textContent = rate ? money(rate) : 'No rate set';
@@ -397,7 +613,10 @@ function buildQuantityPanel() {
       existing.quantity += qty;
       existing.amount = existing.rentalRate * existing.quantity;
     } else {
-      state.items.push({ id: uid(), category: cat, name, displayName: name, rentalRate: rate, pricingLabel: 'Rental Rate', quantity: qty, amount: rate * qty, type: 'QUANTITY' });
+      state.items.push({
+        id: uid(), category: cat, name, rentalRate: rate,
+        pricingLabel: 'Rental Rate', quantity: qty, amount: rate * qty, type: 'QUANTITY'
+      });
     }
     sizeEl.value = '';
     qtyEl.value  = 1;
@@ -411,9 +630,9 @@ function buildQuantityPanel() {
   });
 }
 
-/* =============================================
+/* ─────────────────────────────────────────────
    RENDER ITEMS LIST
-   ============================================= */
+   ───────────────────────────────────────────── */
 function renderItems() {
   const list    = document.getElementById('items-list');
   const emptyEl = document.getElementById('items-empty');
@@ -423,9 +642,9 @@ function renderItems() {
 
   if (!state.items.length) {
     list.innerHTML = '';
-    emptyEl.style.display   = 'block';
-    totalEl.textContent     = '₱0';
-    countEl.textContent     = '0 items';
+    emptyEl.style.display = 'block';
+    totalEl.textContent   = '₱0';
+    countEl.textContent   = '0 items';
     if (badge) badge.textContent = '0';
     updateJotform();
     return;
@@ -436,22 +655,12 @@ function renderItems() {
 
   list.innerHTML = state.items.map(item => {
     total += item.amount || 0;
-    const label = item.type === 'QUANTITY'
-      ? `${item.name} ×${item.quantity}`
-      : item.name;
-
-    // Meta: show pricing label for tracked items
-    let meta = '';
-    if (item.type === 'QUANTITY') {
-      meta = `${money(item.rentalRate)} × ${item.quantity}`;
-    } else {
-      meta = item.pricingLabel || 'Rental Rate';
-    }
-
-    // Tag for first user pricing
-    const fuTag = (item.pricingLabel === 'First User')
-      ? `<span class="fu-tag">1st User</span>`
-      : '';
+    const label = item.type === 'QUANTITY' ? `${item.name} ×${item.quantity}` : item.name;
+    const meta  = item.type === 'QUANTITY'
+      ? `${money(item.rentalRate)} × ${item.quantity}`
+      : (item.pricingLabel || 'Rental Rate');
+    const fuTag = item.pricingLabel === 'First User'
+      ? `<span class="fu-tag">1st User</span>` : '';
 
     return `
       <div class="rental-item" data-id="${item.id}">
@@ -461,8 +670,7 @@ function renderItems() {
         </div>
         <div class="item-amount">${money(item.amount)}</div>
         <button class="btn-remove" data-id="${item.id}" title="Remove">✕</button>
-      </div>
-    `;
+      </div>`;
   }).join('');
 
   totalEl.textContent = money(total);
@@ -472,7 +680,7 @@ function renderItems() {
   updateJotform();
 }
 
-/* ---------- Remove ---------- */
+/* Remove */
 document.addEventListener('click', (e) => {
   const btn = e.target.closest('.btn-remove');
   if (!btn) return;
@@ -480,15 +688,9 @@ document.addEventListener('click', (e) => {
   renderItems();
 });
 
-/* =============================================
-   JOTFORM OUTPUT
-   ============================================= */
-function moneyPlain(n) {
-  // Same as money() but without the ₱ prefix, for inline use
-  if (n === null || n === undefined || isNaN(n)) return '0.00';
-  return Number(n).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
+/* ─────────────────────────────────────────────
+   JOTFORM OUTPUT  →  #input_115
+   ───────────────────────────────────────────── */
 function updateJotform() {
   const lines = [];
   let grandTotal = 0;
@@ -496,25 +698,20 @@ function updateJotform() {
   lines.push('RENTAL ITEMS:');
   lines.push('');
 
-  if (state.items.length === 0) {
+  if (!state.items.length) {
     lines.push('No items selected');
   } else {
     state.items.forEach(item => {
       grandTotal += item.amount || 0;
-
       if (item.type === 'QUANTITY') {
-        // e.g.  BOY-L x 3 @ ₱350.00 = ₱1,050.00
         lines.push(
           `${item.name} x ${item.quantity}` +
           ` @ ₱${moneyPlain(item.rentalRate)}` +
           ` = ₱${moneyPlain(item.amount)}`
         );
       } else {
-        // e.g.  BGI-10000 | Rental Rate @ ₱3,500.00 = ₱3,500.00
-        //   or  BGI-10000 | First User  @ ₱4,500.00 = ₱4,500.00
-        const priceType = item.pricingLabel || 'Rental Rate';
         lines.push(
-          `${item.name} | ${priceType}` +
+          `${item.name} | ${item.pricingLabel || 'Rental Rate'}` +
           ` @ ₱${moneyPlain(item.rentalRate)}` +
           ` = ₱${moneyPlain(item.amount)}`
         );
@@ -527,31 +724,29 @@ function updateJotform() {
 
   window.latestSubmissionText = lines.join('\n');
 
-  // ── Method 1: JFCustomWidget API (widget field) ──
+  // Method 1: JFCustomWidget API
   if (window.JFCustomWidget && typeof JFCustomWidget.sendData === 'function') {
     JFCustomWidget.sendData({ value: window.latestSubmissionText });
   }
 
-  // ── Method 2: Direct DOM write to #input_115 ──
-  // Works when the widget is embedded in an iframe on the same Jotform page,
-  // or when loaded directly in the page. Tries own document first, then parent.
+  // Method 2: Direct DOM write to #input_115
   function writeToField(doc) {
     const field = doc.querySelector('#input_115');
     if (field) {
       field.value = window.latestSubmissionText;
-      // Fire native input + change events so Jotform's own listeners pick it up
       field.dispatchEvent(new Event('input',  { bubbles: true }));
       field.dispatchEvent(new Event('change', { bubbles: true }));
       return true;
     }
     return false;
   }
-
   if (!writeToField(document)) {
     try { writeToField(window.parent.document); } catch(e) {}
     try { writeToField(window.top.document);    } catch(e) {}
   }
 }
 
-/* ---------- Boot ---------- */
+/* ─────────────────────────────────────────────
+   BOOT
+   ───────────────────────────────────────────── */
 loadData();
