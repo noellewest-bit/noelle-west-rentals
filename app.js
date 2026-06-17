@@ -57,7 +57,7 @@ function cleanPrice(raw) {
   if (raw == null || raw === '') return null;
   const s = String(raw).replace(/[₱,\s]/g,'').trim();
   const f = parseFloat(s);
-  return (!isNaN(f) && f > 0) ? f : null;
+  return (!isNaN(f) && f >= 0) ? f : null;  // 0 is valid (free item)
 }
 
 /* ─────────────────────────────────────────────
@@ -330,8 +330,8 @@ function buildTrackedPanel() {
     closeDropdown();
     errorEl.classList.remove('visible');
 
-    const hasRental = item.rentalRate > 0;
-    const hasFU     = item.firstUserPrice > 0;
+    const hasRental = item.rentalRate != null;
+    const hasFU     = item.firstUserPrice != null && item.firstUserPrice > 0;
 
     if (hasFU) {
       ratePreview.style.display = 'none';
@@ -412,7 +412,7 @@ function buildTrackedPanel() {
   priceSelEl.addEventListener('change', (e) => {
     if (!selectedItem || !e.target.matches('input[name="t-price-type"]')) return;
     addBtn.disabled = e.target.value === 'rental'
-      ? !(selectedItem.rentalRate > 0)
+      ? !(selectedItem.rentalRate != null)
       : !(selectedItem.firstUserPrice > 0);
   });
 
@@ -423,7 +423,7 @@ function buildTrackedPanel() {
       return;
     }
 
-    const hasFU = selectedItem.firstUserPrice > 0;
+    const hasFU = selectedItem.firstUserPrice != null && selectedItem.firstUserPrice > 0;
     let chosenRate, pricingLabel;
     if (hasFU) {
       const sel = panel.querySelector('input[name="t-price-type"]:checked');
@@ -536,11 +536,12 @@ function buildQuantityPanel() {
     );
     if (selectedQtyItem) {
       const rate = selectedQtyItem.rentalRate;
-      rateEl.textContent = rate ? money(rate) : 'No rate set';
-      rateEl.classList.toggle('empty', !rate);
-      qtyEl.disabled  = !rate;
-      addBtn.disabled = !rate;
-      if (rate) qtyEl.focus();
+      const hasRate = rate != null;
+      rateEl.textContent = hasRate ? money(rate) : 'No rate set';
+      rateEl.classList.toggle('empty', !hasRate);
+      qtyEl.disabled  = !hasRate;
+      addBtn.disabled = !hasRate;
+      if (hasRate) qtyEl.focus();
     }
   });
 
