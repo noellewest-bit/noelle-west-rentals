@@ -39,7 +39,7 @@ const state = {
    ───────────────────────────────────────────── */
 function money(n) {
   if (n == null || isNaN(n)) return '—';
-  if (n === 0) return '₱0 (FREE)';
+  if (Number(n) === 0) return '₱0 (FREE)';
   return '₱' + Number(n).toLocaleString('en-PH', {minimumFractionDigits:0, maximumFractionDigits:0});
 }
 function moneyItem(n) {
@@ -171,7 +171,10 @@ async function loadFromGoogleSheets() {
         // Type is determined purely by which list the sheet name belongs to
       const type = isQtySheet ? 'QUANTITY' : 'TRACKED';
 
-      masterItems.push({ category: sheetName, name, rentalRate, retailPrice, firstUserPrice, type });
+      // For QUANTITY items: a blank rental rate cell means free (₱0), not missing
+      const effectiveRentalRate = (type === 'QUANTITY' && rentalRate == null) ? 0 : rentalRate;
+
+      masterItems.push({ category: sheetName, name, rentalRate: effectiveRentalRate, retailPrice, firstUserPrice, type });
     }
   }));
 
