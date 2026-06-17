@@ -6,9 +6,7 @@ window.latestSubmissionText = '';
 /* ─────────────────────────────────────────────
    CONFIGURATION
    ───────────────────────────────────────────── */
-const SHEET_ID   = '1-QD9UJ99Rjl1JPlBdKPo7hz5MBOiJKkMyD-qWlD520s';
-const CACHE_KEY  = 'nw_rental_cache';
-const CACHE_TTL  = 5 * 60 * 1000; // 5 minutes
+const SHEET_ID = '1-QD9UJ99Rjl1JPlBdKPo7hz5MBOiJKkMyD-qWlD520s';
 
 /* Category type rules
    – TRACKED: individual items, no duplicates, searchable dropdown
@@ -182,69 +180,22 @@ async function loadFromGoogleSheets() {
   return masterItems;
 }
 
-/* ─────────────────────────────────────────────
-   CACHE (localStorage)
-   ───────────────────────────────────────────── */
-function saveCache(items) {
-  try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), items }));
-  } catch(e) {}
-}
-function loadCache() {
-  try {
-    const raw = localStorage.getItem(CACHE_KEY);
-    if (!raw) return null;
-    const { ts, items } = JSON.parse(raw);
-    if (Date.now() - ts > CACHE_TTL) return null;
-    return items;
-  } catch(e) { return null; }
-}
+
 
 /* ─────────────────────────────────────────────
-   BOOT / LOAD DATA
+   BOOT / LOAD DATA  (always live, no cache)
    ───────────────────────────────────────────── */
 async function loadData() {
   showLoadingState(true);
-
-  // Try cache first for instant render
-  const cached = loadCache();
-  if (cached && cached.length) {
-    state.masterItems = cached;
-    state.loading = false;
-    init();
-    showLoadingState(false);
-    // Then refresh in background
-    refreshInBackground();
-    return;
-  }
-
-  // No cache — fetch live
   try {
     state.masterItems = await loadFromGoogleSheets();
-    saveCache(state.masterItems);
     state.loading = false;
     showLoadingState(false);
     init();
   } catch(e) {
     console.error('Failed to load from Google Sheets:', e);
-    showLoadingState(false, 'Could not load inventory. Please refresh.');
+    showLoadingState(false, 'Could not load inventory. Please refresh the page.');
   }
-}
-
-async function refreshInBackground() {
-  try {
-    const fresh = await loadFromGoogleSheets();
-    if (fresh.length) {
-      state.masterItems = fresh;
-      saveCache(fresh);
-      // Rebuild panels silently if user hasn't started adding items
-      if (state.items.length === 0) {
-        buildTrackedPanel();
-        buildQuantityPanel();
-        switchTab(state.activeTab);
-      }
-    }
-  } catch(e) { /* silent fail */ }
 }
 
 function showLoadingState(loading, errorMsg) {
