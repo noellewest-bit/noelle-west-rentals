@@ -11,22 +11,17 @@ const SHEET_ID = '1-QD9UJ99Rjl1JPlBdKPo7hz5MBOiJKkMyD-qWlD520s';
 /* Category type rules
    – TRACKED: individual items, no duplicates, searchable dropdown
    – QUANTITY: size+qty workflow, merging, repeatable               */
+// "PET-#" is the sheet name for individually tracked petticoat items (PET-01, PET-02…)
+// "PET"   is a separate sheet with 3 quantity variants: PET, PET-3 HOOPS, PET-6 HOOPS
 const TRACKED_CATS = [
-  "BGI","BGS","PGI","PGS","PGC","FIL","MG","CD","MS","CS","S-UPPER"
-  // PET sheet items are TRACKED (PET-01, PET-02 …) — handled dynamically
+  "BGI","BGS","PGI","PGS","PGC","FIL","MG","CD","MS","CS","S-UPPER","PET-#"
 ];
 const QTY_CATS = [
   "BCPO","BOY","BPSC","BPO","BPOL","BPS","COAT BARONG","BCC","BPOC",
   "VST","POLO","ACC","PEN","PANTS",
-  "MOH","BMG","FGG",   // new quantity sheets
-  "PET"                // PET sheet (whole category) = quantity
+  "MOH","BMG","FGG",
+  "PET"   // quantity sheet: PET, PET-3 HOOPS, PET-6 HOOPS
 ];
-
-// PET-# individual items are TRACKED even though the PET sheet is quantity.
-// We detect them by name pattern: starts with "PET-" followed by digits.
-function isPetTracked(name) {
-  return /^PET-\d/i.test(name);
-}
 
 /* ─────────────────────────────────────────────
    STATE
@@ -122,7 +117,9 @@ async function loadFromGoogleSheets() {
     // Quantity (original)
     "BCPO","BOY","BPSC","BPO","BPOL","BPS","COAT BARONG","BCC","BPOC",
     "VST","POLO","ACC","PEN","PANTS",
-    // PET sheet (quantity, but items named PET-# become tracked)
+    // PET-# sheet = tracked individual petticoats (PET-01, PET-02…)
+    "PET-#",
+    // PET sheet = quantity variants (PET, PET-3 HOOPS, PET-6 HOOPS)
     "PET",
     // New quantity sheets
     "MOH","BMG","FGG"
@@ -163,15 +160,8 @@ async function loadFromGoogleSheets() {
       const retailPrice    = retailCol >= 0 ? cleanPrice(row[retailCol]) : null;
       const firstUserPrice = fuCol     >= 0 ? cleanPrice(row[fuCol])     : null;
 
-      // Special rule: PET sheet items named PET-## are TRACKED
-      let type;
-      if (sheetName === 'PET' && isPetTracked(name)) {
-        type = 'TRACKED';
-      } else if (isQtySheet) {
-        type = 'QUANTITY';
-      } else {
-        type = 'TRACKED';
-      }
+        // Type is determined purely by which list the sheet name belongs to
+      const type = isQtySheet ? 'QUANTITY' : 'TRACKED';
 
       masterItems.push({ category: sheetName, name, rentalRate, retailPrice, firstUserPrice, type });
     }
@@ -246,7 +236,7 @@ function switchTab(tab) {
 function buildTrackedPanel() {
   const panel = document.getElementById('panel-tracked');
 
-  // All TRACKED items (includes PET-# items from PET sheet)
+  // All TRACKED categories (BGI, BGS … S-UPPER, and PET-# individual petticoats)
   const trackedCats = [...new Set(
     state.masterItems.filter(i => i.type === 'TRACKED').map(i => i.category)
   )].sort();
