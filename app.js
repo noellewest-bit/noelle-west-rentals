@@ -147,14 +147,25 @@ async function loadFromGoogleSheets() {
 
     // First row = headers
     const headers = rows[0].map(h => h.toUpperCase().trim());
-    const nameCol   = 0; // always col A
-    let rentalCol   = -1, retailCol = -1, fuCol = -1;
+    const nameCol = 0; // always col A
+    let rentalCol = -1, retailCol = -1, fuCol = -1;
 
     headers.forEach((h, i) => {
-      if (h.includes('RENTAL') && h.includes('RATE'))  rentalCol = i;
+      if (i === 0) return; // skip name column
+      // Broad rental rate detection: catches RENTAL RATE, RENTAL FEE, RENTAL PRICE, RATE, PRICE, AMOUNT, RENTAL
+      if (rentalCol === -1 && (
+        (h.includes('RENTAL') && (h.includes('RATE') || h.includes('FEE') || h.includes('PRICE'))) ||
+        h === 'RENTAL' || h === 'RATE' || h === 'PRICE' || h === 'AMOUNT'
+      )) rentalCol = i;
       if (h.includes('RETAIL') && h.includes('PRICE')) retailCol = i;
       if (h.includes('FIRST')  && h.includes('USER'))  fuCol     = i;
     });
+
+    // Last resort: if no rental column found, use col B (simple 2-column sheets)
+    if (rentalCol === -1 && headers.length >= 2) rentalCol = 1;
+
+    // Log for debugging (visible in browser console)
+    console.log('[' + sheetName + '] headers:', rows[0], '=> rentalCol:', rentalCol);
 
     // Determine base type for this sheet
     const isQtySheet = QTY_CATS.includes(sheetName);
@@ -168,10 +179,10 @@ async function loadFromGoogleSheets() {
       const retailPrice    = retailCol >= 0 ? cleanPrice(row[retailCol]) : null;
       const firstUserPrice = fuCol     >= 0 ? cleanPrice(row[fuCol])     : null;
 
-        // Type is determined purely by which list the sheet name belongs to
+      // Type is determined purely by which list the sheet name belongs to
       const type = isQtySheet ? 'QUANTITY' : 'TRACKED';
 
-      // For QUANTITY items: a blank rental rate cell means free (₱0), not missing
+      // For QUANTITY items: blank rental cell = intentionally free (₱0)
       const effectiveRentalRate = (type === 'QUANTITY' && rentalRate == null) ? 0 : rentalRate;
 
       masterItems.push({ category: sheetName, name, rentalRate: effectiveRentalRate, retailPrice, firstUserPrice, type });
@@ -648,12 +659,24 @@ function updateJotform() {
   const lines = [];
   let grandTotal = 0;
 
-  lines.push('RENTAL ITEMS:');
-  lines.push('');
-
   if (!state.items.length) {
-    lines.push('No items selected');
-  } else {
+    window.latestSubmissionText = '';
+    if (window.JFCustomWidget && typeof JFCustomWidget.sendData === 'function') {
+      JFCustomWidget.sendData({ value: '' });
+    }
+    function writeBlank(doc) {
+      const field = doc.querySelector('#input_115');
+      if (field) { field.value = ''; field.dispatchEvent(new Event('input', { bubbles: true })); field.dispatchEvent(new Event('change', { bubbles: true })); return true; }
+      return false;
+    }
+    if (!writeBlank(document)) {
+      try { writeBlank(window.parent.document); } catch(e) {}
+      try { writeBlank(window.top.document); } catch(e) {}
+    }
+    return;
+  }
+
+  if (true) {
     state.items.forEach(item => {
       grandTotal += item.amount || 0;
       if (item.type === 'QUANTITY') {
