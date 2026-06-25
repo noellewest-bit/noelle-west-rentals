@@ -61,7 +61,12 @@ function showError(el, msg) {
 }
 function cleanPrice(raw) {
   if (raw == null) return null;
-  const s = String(raw).replace(/[₱,\s]/g,'').trim();
+  // Strip peso sign, commas, spaces, and any whitespace
+  const s = String(raw)
+    .replace(/₱/g, '')   // ₱ peso sign
+    .replace(/,/g, '')
+    .replace(/\s/g, '')
+    .trim();
   if (s === '' || s.toLowerCase() === 'nan') return null;
   const f = parseFloat(s);
   if (isNaN(f)) return null;
@@ -165,7 +170,8 @@ async function loadFromGoogleSheets() {
     if (rentalCol === -1 && headers.length >= 2) rentalCol = 1;
 
     // Log for debugging (visible in browser console)
-    console.log('[' + sheetName + '] headers:', rows[0], '=> rentalCol:', rentalCol);
+    console.log('[' + sheetName + '] headers:', rows[0], '=> rentalCol:', rentalCol, '| retailCol:', retailCol, '| fuCol:', fuCol);
+    if (rows[1]) console.log('[' + sheetName + '] row1 sample:', rows[1]);
 
     // Determine base type for this sheet
     const isQtySheet = QTY_CATS.includes(sheetName);
