@@ -237,12 +237,12 @@ function init() {
   buildTrackedPanel();
   buildQuantityPanel();
   switchTab(state.activeTab);
-  renderItems();
+  renderItems();   // also calls updateJotform → blanks #input_115 on load
 
   if (window.JFCustomWidget) {
     JFCustomWidget.subscribe('submit', function() {
       updateJotform();
-      JFCustomWidget.sendSubmit({ valid: true, value: window.latestSubmissionText || 'No items selected' });
+      JFCustomWidget.sendSubmit({ valid: true, value: window.latestSubmissionText || '' });
     });
   }
 }
@@ -672,13 +672,19 @@ function updateJotform() {
     }
     function writeBlank(doc) {
       const field = doc.querySelector('#input_115');
-      if (field) { field.value = ''; field.dispatchEvent(new Event('input', { bubbles: true })); field.dispatchEvent(new Event('change', { bubbles: true })); return true; }
+      if (field) {
+        field.value = '';
+        field.textContent = '';
+        field.dispatchEvent(new Event('input',  { bubbles: true }));
+        field.dispatchEvent(new Event('change', { bubbles: true }));
+        field.dispatchEvent(new Event('keyup',  { bubbles: true }));
+        return true;
+      }
       return false;
     }
-    if (!writeBlank(document)) {
-      try { writeBlank(window.parent.document); } catch(e) {}
-      try { writeBlank(window.top.document); } catch(e) {}
-    }
+    try { writeBlank(document); }           catch(e) {}
+    try { writeBlank(window.parent.document); } catch(e) {}
+    try { writeBlank(window.top.document);    } catch(e) {}
     return;
   }
 
