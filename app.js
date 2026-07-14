@@ -210,25 +210,12 @@ async function loadData() {
     state.loading = false;
     showLoadingState(false);
     init();
-    // If a restore is pending (JotForm ready fired before data loaded), apply it now
-    if (window._pendingRestore) {
-      const text = window._pendingRestore;
-      window._pendingRestore = null;
-      window._restoreDone = false; // allow the pending restore to run
-      await restoreFromSummary(text);
-    } else {
-      // Try reading existing value directly (handles edit links where ready event is unreliable)
-      const restored = tryReadExistingValue();
-      if (!restored) {
-        // Poll for up to 3 seconds in case JotForm populates the field after a delay
-        let attempts = 0;
-        const poll = setInterval(() => {
-          attempts++;
-          if (state.items.length || attempts > 15) { clearInterval(poll); return; }
-          const found = tryReadExistingValue();
-          if (found) clearInterval(poll);
-        }, 200);
-      }
+    // Apply saved restore text (captured from JotForm ready event before data loaded)
+    const textToRestore = window._savedRestoreText || null;
+    if (textToRestore) {
+      console.log('[loadData] applying saved restore text');
+      window._savedRestoreText = null; // consume it
+      await restoreFromSummary(textToRestore);
     }
   } catch(e) {
     console.error('Failed to load from Google Sheets:', e);
@@ -263,10 +250,11 @@ function init() {
 /* ─────────────────────────────────────────────
    JOTFORM SETUP  (submit + ready/restore)
    ───────────────────────────────────────────── */
-// ── YOUR JOTFORM API KEY ──────────────────────
-// Get this from: jotform.com/myaccount/api
 const JOTFORM_API_KEY = '63d52d3f1b3632d31de129241f7f6facc';
 
+/* ─────────────────────────────────────────────
+   JOTFORM SETUP
+   ───────────────────────────────────────────── */
 function setupJotform() {
   if (typeof JFCustomWidget === 'undefined') return;
 
@@ -276,175 +264,37 @@ function setupJotform() {
   });
 
   JFCustomWidget.subscribe('ready', function(data) {
-    console.log('[JotForm ready] raw data:', JSON.stringify(data));
+    console.log('[JotForm ready] fired, value:', data?.value ? data.value.substring(0, 60) : 'none');
 
-    // ── Step 1: Read value directly from ready event data ──
-    // JotForm passes the saved field value as data.value on edit links
-    let existingValue = null;
-    if (data) {
-      existingValue = data.value || data.answer || data.field_value || null;
-      if (existingValue && typeof existingValue === 'string') {
-        // Unescape \r\n to real newlines
-        existingValue = existingValue.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
-        if (!existingValue.includes('RENTAL TOTAL:')) existingValue = null;
-      } else {
-        existingValue = null;
-      }
+    // Extract saved value from ready event
+    const raw = data?.value || '';
+    if (raw && raw.includes('RENTAL TOTAL:') && !window._savedRestoreText) {
+      window._savedRestoreText = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+      console.log('[JotForm ready] saved restore text:', window._savedRestoreText.substring(0, 60));
     }
 
-    // ── Step 2: Extract submission ID ──
-    let sid = null;
-    if (data) {
-      sid = data.sid || data.submissionID || data.submissionId
-          || data.submission_id || data.submissionid || null;
-      if (sid) sid = String(sid);
-    }
-    if (!sid) {
-      try {
-        const raw = JSON.stringify(data);
-        const m = raw.match(/"(?:sid|submissionID|submissionId|submission_id)"\s*:\s*"?(\d{10,})"?/i);
-        if (m) sid = m[1];
-      } catch(e) {}
-    }
-    if (!sid) {
-      try {
-        const url = window.parent.location.href;
-        const m = url.match(/\/edit\/(\d{10,})/);
-        if (m) sid = m[1];
-      } catch(e) {}
-    }
-    console.log('[JotForm ready] sid:', sid, '| value found:', !!existingValue);
-    window._jfSid = sid;
-
-    // ── Step 3: Restore — value from ready event is most reliable ──
-    if (existingValue) {
-      console.log('[JotForm ready] restoring from ready event value:', existingValue.substring(0, 80));
-      if (sid) saveToLocalStorage(sid, existingValue);
-      restoreFromSummary(existingValue);
-      return;
-    }
-
-    // ── Step 4: Try localStorage ──
-    const fromStorage = sid ? loadFromLocalStorage(sid) : null;
-    if (fromStorage) {
-      console.log('[JotForm ready] restoring from localStorage');
-      restoreFromSummary(fromStorage);
-      return;
-    }
-
-    // ── Step 5: Try DOM read (field pre-populated by JotForm) ──
-    const restoredNow = tryReadExistingValue();
-    if (restoredNow) return;
-
-    // ── Step 6: API fallback ──
-    if (sid && JOTFORM_API_KEY && JOTFORM_API_KEY !== 'YOUR_API_KEY_HERE') {
-      const apiUrl = `https://api.jotform.com/submission/${sid}?apiKey=${JOTFORM_API_KEY}&nocache=${Date.now()}`;
-      fetch(apiUrl, { mode: 'cors' })
-        .then(r => r.json())
-        .then(json => {
-          if (json?.responseCode !== 200) return;
-          const answers = json?.content?.answers || {};
-          for (const key of Object.keys(answers)) {
-            const v = answers[key]?.answer || answers[key]?.prettyFormat || '';
-            if (typeof v === 'string' && v.includes('RENTAL TOTAL:')) {
-              console.log('[JotForm API] found in field', key);
-              if (!state.items.length) {
-                saveToLocalStorage(sid, v.trim());
-                restoreFromSummary(v.trim());
-              }
-              break;
-            }
-          }
-        })
-        .catch(err => console.log('[JotForm API] error:', err.message));
-    }
+    // Extract sid
+    const sid = String(data?.sid || data?.submissionID || data?.submissionId || '');
+    if (sid) window._jfSid = sid;
   });
 
-  // Also listen for postMessage from JotForm parent (some versions send sid this way)
+  // postMessage: only capture sid, never restore
   window.addEventListener('message', function(e) {
     try {
       const msg = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
       if (!msg) return;
-
-      // Catch sid from postMessage
-      const sid = msg.sid || msg.submissionID || msg.submissionId || msg.submission_id;
-      if (sid && !window._jfSid) {
-        console.log('[postMessage] got sid:', sid);
-        window._jfSid = String(sid);
-      }
-
-      // Don't restore from postMessage — ready event handles it more reliably
+      const sid = msg.sid || msg.submissionID || msg.submissionId;
+      if (sid && !window._jfSid) window._jfSid = String(sid);
     } catch(e) {}
   });
 }
 
-/* ─────────────────────────────────────────────
-   READ EXISTING VALUE FROM JOTFORM FIELD
-   Tries multiple methods to read #input_115
-   value when opening an edit link
-   ───────────────────────────────────────────── */
-function tryReadExistingValue() {
-  if (state.items.length) return true; // already restored
-
-  // Method A: JFCustomWidget.getValue() — proper edit-mode API
-  if (typeof JFCustomWidget !== 'undefined') {
-    try {
-      const val = JFCustomWidget.getValue();
-      console.log('[getValue] raw:', val ? val.substring(0, 80) : 'empty/null');
-      if (val && typeof val === 'string' && val.includes('RENTAL TOTAL:')) {
-        console.log('[getValue] restoring from widget value');
-        restoreFromSummary(val);
-        return true;
-      }
-      // Sometimes getValue returns an object with a value property
-      if (val && typeof val === 'object') {
-        const inner = val.value || val.answer || val.text || '';
-        if (inner && inner.includes('RENTAL TOTAL:')) {
-          console.log('[getValue] restoring from widget value object');
-          restoreFromSummary(inner);
-          return true;
-        }
-      }
-    } catch(e) { console.log('[getValue] error:', e.message); }
-  }
-
-  // Method B: Read from every textarea/input in parent docs that contains our data
-  const readFromDoc = (doc) => {
-    try {
-      // Try specific field id first
-      for (const sel of ['#input_115', 'textarea#input_115', '[name="q115_rentalSummary"]', '[id*="115"]']) {
-        const el = doc.querySelector(sel);
-        if (el) {
-          const v = el.value || el.textContent || '';
-          if (v.includes('RENTAL TOTAL:')) return v.trim();
-        }
-      }
-      // Scan ALL textareas for rental summary content
-      const allTA = doc.querySelectorAll('textarea, input[type="hidden"]');
-      for (const el of allTA) {
-        const v = el.value || '';
-        if (v.includes('RENTAL TOTAL:')) {
-          console.log('[DOM scan] found rental summary in', el.id || el.name || el.tagName);
-          return v.trim();
-        }
-      }
-    } catch(e) {}
-    return null;
-  };
-
-  for (const doc of [document, ...[window.parent?.document, window.top?.document].filter(Boolean)]) {
-    try {
-      const val = readFromDoc(doc);
-      if (val) {
-        console.log('[DOM read] restoring:', val.substring(0, 80));
-        restoreFromSummary(val);
-        return true;
-      }
-    } catch(e) {}
-  }
-
-  console.log('[tryReadExistingValue] no existing value found');
-  return false;
+function getSubmissionId() {
+  try {
+    const m = window.parent.location.href.match(/\/edit\/(\d{10,})/);
+    if (m) return m[1];
+  } catch(e) {}
+  return null;
 }
 
 function saveToLocalStorage(sid, text) {
@@ -461,92 +311,61 @@ function loadFromLocalStorage(sid) {
    RESTORE FROM SAVED SUMMARY
    ───────────────────────────────────────────── */
 async function restoreFromSummary(text) {
-  if (!text || !text.includes('RENTAL TOTAL:')) return;
-  // Guard: only restore once per page load
-  if (window._restoreDone) {
-    console.log('[restore] already done, skipping duplicate call');
+  if (!text || !text.includes('RENTAL TOTAL:')) {
+    console.log('[restore] no valid text to restore');
     return;
   }
-  window._restoreDone = true;
+  console.log('[restore] starting restore from:', text.substring(0, 80));
 
-  // If sheet data isn't ready yet, store as pending — loadData() will call us after init()
-  if (!state.masterItems.length) {
-    window._pendingRestore = text;
-    return;
-  }
+  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').map(l => l.trim()).filter(Boolean);
+  console.log('[restore] lines:', lines);
 
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-  // Lines are either:
-  //   TRACKED:  "ITEM-NAME | Rental Rate @ ₱1,800.00 = ₱1,800.00"
-  //   TRACKED:  "ITEM-NAME | First User @ ₱2,500.00 = ₱2,500.00"
-  //   QUANTITY: "BOY-L x 3 @ ₱350.00 = ₱1,050.00"
-  //   FOOTER:   "RENTAL TOTAL: ₱..."
-
-  console.log('[restore] parsing', lines.length, 'lines:', lines);
+  let restored = 0;
   for (const line of lines) {
     if (line.startsWith('RENTAL TOTAL:')) continue;
 
-    // ── Tracked item ──
-    // Format: "NAME | Pricing Label @ ₱RATE = ₱AMOUNT"
+    // Tracked: "NAME | Rental Rate @ ₱1,000.00 = ₱1,000.00"
     const trackedMatch = line.match(/^(.+?)\s*\|\s*(Rental Rate|First User)\s*@\s*[^\d]*([\d,]+\.?\d*)\s*=\s*[^\d]*([\d,]+\.?\d*)$/);
     if (trackedMatch) {
       const name         = trackedMatch[1].trim();
       const pricingLabel = trackedMatch[2].trim();
       const rate         = parseFloat(trackedMatch[3].replace(/,/g, ''));
       const amount       = parseFloat(trackedMatch[4].replace(/,/g, ''));
-
-      // Find the item in masterItems
-      console.log('[restore] tracked match — name:', name, 'rate:', rate);
+      console.log('[restore] tracked:', name, rate, amount);
       const masterItem = state.masterItems.find(i => i.type === 'TRACKED' && i.name === name);
-      console.log('[restore] masterItem found:', !!masterItem, masterItem ? masterItem.category : 'NOT FOUND');
+      console.log('[restore] found in master:', !!masterItem);
       if (masterItem) {
-        state.items.push({
-          id:           uid(),
-          category:     masterItem.category,
-          name:         masterItem.name,
-          rentalRate:   rate,
-          pricingLabel: pricingLabel,
-          quantity:     1,
-          amount:       amount,
-          type:         'TRACKED'
-        });
+        state.items.push({ id: uid(), category: masterItem.category, name, rentalRate: rate, pricingLabel, quantity: 1, amount, type: 'TRACKED' });
+        restored++;
       }
       continue;
     }
 
-    // ── Quantity item ──
-    // Format: "NAME x QTY @ ₱RATE = ₱AMOUNT"
+    // Quantity: "NAME x QTY @ ₱350.00 = ₱1,050.00"
     const qtyMatch = line.match(/^(.+?)\s+x\s+(\d+)\s+@\s+[^\d]*([\d,]+\.?\d*)\s+=\s+[^\d]*([\d,]+\.?\d*)$/);
     if (qtyMatch) {
       const name   = qtyMatch[1].trim();
       const qty    = parseInt(qtyMatch[2]);
       const rate   = parseFloat(qtyMatch[3].replace(/,/g, ''));
       const amount = parseFloat(qtyMatch[4].replace(/,/g, ''));
-
+      console.log('[restore] quantity:', name, qty, rate);
       const masterItem = state.masterItems.find(i => i.type === 'QUANTITY' && i.name === name);
       if (masterItem) {
-        state.items.push({
-          id:           uid(),
-          category:     masterItem.category,
-          name:         masterItem.name,
-          rentalRate:   rate,
-          pricingLabel: 'Rental Rate',
-          quantity:     qty,
-          amount:       amount,
-          type:         'QUANTITY'
-        });
+        state.items.push({ id: uid(), category: masterItem.category, name, rentalRate: rate, pricingLabel: 'Rental Rate', quantity: qty, amount, type: 'QUANTITY' });
+        restored++;
       }
       continue;
     }
+
+    console.log('[restore] line did not match any pattern:', line);
   }
 
-  // Rebuild panels so restored tracked items are hidden from dropdowns
+  console.log('[restore] restored', restored, 'items');
   buildTrackedPanel();
   buildQuantityPanel();
   switchTab(state.activeTab);
   renderItems();
 }
-
 /* ─────────────────────────────────────────────
    TAB SWITCHING
    ───────────────────────────────────────────── */
