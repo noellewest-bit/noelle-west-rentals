@@ -249,6 +249,10 @@ function init() {
 /* ─────────────────────────────────────────────
    JOTFORM SETUP  (submit + ready/restore)
    ───────────────────────────────────────────── */
+// ── YOUR JOTFORM API KEY ──────────────────────
+// Get this from: jotform.com/myaccount/api
+const JOTFORM_API_KEY = '63d52d3f1b3632d31de129241f7f6facc';
+
 function setupJotform() {
   if (typeof JFCustomWidget === 'undefined') return;
 
@@ -258,25 +262,58 @@ function setupJotform() {
   });
 
   JFCustomWidget.subscribe('ready', function(data) {
-    console.log('[JotForm ready] data:', JSON.stringify(data));
+    console.log('[JotForm ready] raw data:', JSON.stringify(data));
 
-    // Extract submission ID
+    // ── Extract submission ID from every possible source ──
     let sid = null;
+
+    // 1. From data object fields
     if (data) {
-      sid = data.sid || data.submissionID || data.submissionId || null;
+      sid = data.sid || data.submissionID || data.submissionId
+          || data.submission_id || data.submissionid || null;
       if (sid) sid = String(sid);
     }
+
+    // 2. Deep search in data JSON
     if (!sid) {
       try {
-        const m = JSON.stringify(data).match(/"sid"\s*:\s*"?(\d+)"?/);
+        const raw = JSON.stringify(data);
+        const m = raw.match(/"(?:sid|submissionID|submissionId|submission_id)"\s*:\s*"?(\d{10,})"?/i);
         if (m) sid = m[1];
       } catch(e) {}
     }
-    if (!sid) sid = getSubmissionId();
-    console.log('[JotForm ready] sid:', sid);
+
+    // 3. From parent page URL  (jotform.com/edit/SUBMISSION_ID)
+    if (!sid) {
+      try {
+        const url = window.parent.location.href;
+        const m = url.match(/\/edit\/(\d{10,})/);
+        if (m) sid = m[1];
+      } catch(e) {}
+    }
+
+    // 4. From postMessage / referrer
+    if (!sid) {
+      try {
+        const ref = document.referrer;
+        const m = ref.match(/\/edit\/(\d{10,})/);
+        if (m) sid = m[1];
+      } catch(e) {}
+    }
+
+    // 5. From widget iframe src params
+    if (!sid) {
+      try {
+        const src = window.location.href;
+        const m = src.match(/[?&](?:sid|submissionID|submission_id)=(\d{10,})/i);
+        if (m) sid = m[1];
+      } catch(e) {}
+    }
+
+    console.log('[JotForm ready] resolved sid:', sid);
     window._jfSid = sid;
 
-    // Try localStorage first (instant)
+    // ── Restore from localStorage (instant, no API needed) ──
     const fromStorage = sid ? loadFromLocalStorage(sid) : null;
     if (fromStorage) {
       console.log('[JotForm ready] restoring from localStorage');
@@ -284,45 +321,70 @@ function setupJotform() {
       return;
     }
 
-    // Fetch saved value from JotForm API (field 115)
-    if (sid) {
-      console.log('[JotForm ready] fetching from JotForm API...');
-      const apiUrl = `https://api.jotform.com/submission/${sid}?apiKey=6b9359da26ff8421a11c7f9dca4553a9&nocache=${Date.now()}`;
-      fetch(apiUrl, { mode: 'cors' })
-        .then(r => r.json())
-        .then(json => {
-          console.log('[JotForm API] responseCode:', json?.responseCode);
-          const answer = json?.content?.answers?.['115'];
-          console.log('[JotForm API] field 115:', JSON.stringify(answer));
-          const saved = (answer?.answer && answer.answer.trim())
-            ? answer.answer.trim()
-            : (answer?.prettyFormat && answer.prettyFormat.trim())
-            ? answer.prettyFormat.trim()
-            : null;
-          if (saved) {
-            console.log('[JotForm API] restoring:', saved.substring(0, 80));
-            saveToLocalStorage(sid, saved);
-            restoreFromSummary(saved);
-          } else {
-            console.log('[JotForm API] no saved value in field 115');
-          }
-        })
-        .catch(err => console.log('[JotForm API] error:', err.message || err));
+    // ── Restore from JotForm API ──
+    if (!sid) {
+      console.log('[JotForm ready] no sid found, cannot restore');
+      return;
     }
-  });
-}
+    if (!JOTFORM_API_KEY || JOTFORM_API_KEY === 'YOUR_API_KEY_HERE') {
+      console.warn('[JotForm API] API key not set — edit restoration requires your JotForm API key');
+      return;
+    }
 
-function getSubmissionId() {
-  try {
-    const parentUrl = window.parent.location.href;
-    const m = parentUrl.match(/\/edit\/(\d+)/);
-    if (m) return m[1];
-  } catch(e) {}
-  try {
-    const m = window.location.href.match(/[?&]sid=(\d+)/);
-    if (m) return m[1];
-  } catch(e) {}
-  return null;
+    console.log('[JotForm ready] fetching submission from API...');
+    const apiUrl = `https://api.jotform.com/submission/${sid}?apiKey=${JOTFORM_API_KEY}&nocache=${Date.now()}`;
+    fetch(apiUrl, { mode: 'cors' })
+      .then(r => r.json())
+      .then(json => {
+        console.log('[JotForm API] responseCode:', json?.responseCode, '| content keys:', Object.keys(json?.content || {}));
+        const answers = json?.content?.answers || {};
+        console.log('[JotForm API] all answer keys:', Object.keys(answers));
+
+        // Try field 115 first, then scan all fields for our rental summary format
+        let saved = null;
+        const tryField = (ans) => {
+          if (!ans) return null;
+          const v = ans.answer || ans.prettyFormat || '';
+          return (typeof v === 'string' && v.trim()) ? v.trim() : null;
+        };
+
+        saved = tryField(answers['115']);
+
+        // Fallback: scan all fields for one that looks like our output
+        if (!saved) {
+          for (const key of Object.keys(answers)) {
+            const candidate = tryField(answers[key]);
+            if (candidate && candidate.includes('RENTAL TOTAL:')) {
+              console.log('[JotForm API] found rental summary in field', key);
+              saved = candidate;
+              break;
+            }
+          }
+        }
+
+        if (saved) {
+          console.log('[JotForm API] restoring:', saved.substring(0, 100));
+          saveToLocalStorage(sid, saved);
+          restoreFromSummary(saved);
+        } else {
+          console.log('[JotForm API] no rental summary found in submission');
+        }
+      })
+      .catch(err => console.log('[JotForm API] fetch error:', err.message || err));
+  });
+
+  // Also listen for postMessage from JotForm parent (some versions send sid this way)
+  window.addEventListener('message', function(e) {
+    try {
+      const msg = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
+      if (!msg) return;
+      const sid = msg.sid || msg.submissionID || msg.submissionId || msg.submission_id;
+      if (sid && !window._jfSid) {
+        console.log('[postMessage] got sid:', sid);
+        window._jfSid = String(sid);
+      }
+    } catch(e) {}
+  });
 }
 
 function saveToLocalStorage(sid, text) {
