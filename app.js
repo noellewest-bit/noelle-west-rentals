@@ -214,6 +214,7 @@ async function loadData() {
     if (window._pendingRestore) {
       const text = window._pendingRestore;
       window._pendingRestore = null;
+      window._restoreDone = false; // allow the pending restore to run
       await restoreFromSummary(text);
     } else {
       // Try reading existing value directly (handles edit links where ready event is unreliable)
@@ -372,17 +373,7 @@ function setupJotform() {
         window._jfSid = String(sid);
       }
 
-      // JotForm sometimes sends field values via postMessage on edit load
-      // Look for our rental summary in any string values
-      const raw = JSON.stringify(msg);
-      if (raw.includes('RENTAL TOTAL:') && !state.items.length) {
-        const m = raw.match(/"([^"]*RENTAL TOTAL:[^"]*)"/);
-        if (m) {
-          const text = m[1].replace(/\\n/g, '\n').replace(/\\u20b1/g, '₱');
-          console.log('[postMessage] found rental summary, restoring...');
-          restoreFromSummary(text);
-        }
-      }
+      // Don't restore from postMessage — ready event handles it more reliably
     } catch(e) {}
   });
 }
@@ -470,6 +461,14 @@ function loadFromLocalStorage(sid) {
    RESTORE FROM SAVED SUMMARY
    ───────────────────────────────────────────── */
 async function restoreFromSummary(text) {
+  if (!text || !text.includes('RENTAL TOTAL:')) return;
+  // Guard: only restore once per page load
+  if (window._restoreDone) {
+    console.log('[restore] already done, skipping duplicate call');
+    return;
+  }
+  window._restoreDone = true;
+
   // If sheet data isn't ready yet, store as pending — loadData() will call us after init()
   if (!state.masterItems.length) {
     window._pendingRestore = text;
