@@ -482,12 +482,13 @@ async function restoreFromSummary(text) {
   //   QUANTITY: "BOY-L x 3 @ ₱350.00 = ₱1,050.00"
   //   FOOTER:   "RENTAL TOTAL: ₱..."
 
+  console.log('[restore] parsing', lines.length, 'lines:', lines);
   for (const line of lines) {
     if (line.startsWith('RENTAL TOTAL:')) continue;
 
     // ── Tracked item ──
     // Format: "NAME | Pricing Label @ ₱RATE = ₱AMOUNT"
-    const trackedMatch = line.match(/^(.+?)\s*\|\s*(Rental Rate|First User)\s*@\s*₱([\d,]+\.?\d*)\s*=\s*₱([\d,]+\.?\d*)$/);
+    const trackedMatch = line.match(/^(.+?)\s*\|\s*(Rental Rate|First User)\s*@\s*[^\d]*([\d,]+\.?\d*)\s*=\s*[^\d]*([\d,]+\.?\d*)$/);
     if (trackedMatch) {
       const name         = trackedMatch[1].trim();
       const pricingLabel = trackedMatch[2].trim();
@@ -495,7 +496,9 @@ async function restoreFromSummary(text) {
       const amount       = parseFloat(trackedMatch[4].replace(/,/g, ''));
 
       // Find the item in masterItems
+      console.log('[restore] tracked match — name:', name, 'rate:', rate);
       const masterItem = state.masterItems.find(i => i.type === 'TRACKED' && i.name === name);
+      console.log('[restore] masterItem found:', !!masterItem, masterItem ? masterItem.category : 'NOT FOUND');
       if (masterItem) {
         state.items.push({
           id:           uid(),
@@ -513,7 +516,7 @@ async function restoreFromSummary(text) {
 
     // ── Quantity item ──
     // Format: "NAME x QTY @ ₱RATE = ₱AMOUNT"
-    const qtyMatch = line.match(/^(.+?)\s+x\s+(\d+)\s+@\s+₱([\d,]+\.?\d*)\s+=\s+₱([\d,]+\.?\d*)$/);
+    const qtyMatch = line.match(/^(.+?)\s+x\s+(\d+)\s+@\s+[^\d]*([\d,]+\.?\d*)\s+=\s+[^\d]*([\d,]+\.?\d*)$/);
     if (qtyMatch) {
       const name   = qtyMatch[1].trim();
       const qty    = parseInt(qtyMatch[2]);
