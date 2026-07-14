@@ -210,6 +210,12 @@ async function loadData() {
     state.loading = false;
     showLoadingState(false);
     init();
+    // If a restore is pending (JotForm ready fired before data loaded), apply it now
+    if (window._pendingRestore) {
+      const text = window._pendingRestore;
+      window._pendingRestore = null;
+      await restoreFromSummary(text);
+    }
   } catch(e) {
     console.error('Failed to load from Google Sheets:', e);
     showLoadingState(false, 'Could not load inventory. Please refresh the page.');
@@ -333,13 +339,10 @@ function loadFromLocalStorage(sid) {
    RESTORE FROM SAVED SUMMARY
    ───────────────────────────────────────────── */
 async function restoreFromSummary(text) {
-  // Wait for sheet data to be ready
+  // If sheet data isn't ready yet, store as pending — loadData() will call us after init()
   if (!state.masterItems.length) {
-    await new Promise(resolve => {
-      const check = setInterval(() => {
-        if (state.masterItems.length) { clearInterval(check); resolve(); }
-      }, 100);
-    });
+    window._pendingRestore = text;
+    return;
   }
 
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
@@ -404,6 +407,10 @@ async function restoreFromSummary(text) {
     }
   }
 
+  // Rebuild panels so restored tracked items are hidden from dropdowns
+  buildTrackedPanel();
+  buildQuantityPanel();
+  switchTab(state.activeTab);
   renderItems();
 }
 
