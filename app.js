@@ -277,17 +277,27 @@ function setupJotform() {
   JFCustomWidget.subscribe('ready', function(data) {
     console.log('[JotForm ready] raw data:', JSON.stringify(data));
 
-    // ── Extract submission ID from every possible source ──
-    let sid = null;
+    // ── Step 1: Read value directly from ready event data ──
+    // JotForm passes the saved field value as data.value on edit links
+    let existingValue = null;
+    if (data) {
+      existingValue = data.value || data.answer || data.field_value || null;
+      if (existingValue && typeof existingValue === 'string') {
+        // Unescape \r\n to real newlines
+        existingValue = existingValue.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+        if (!existingValue.includes('RENTAL TOTAL:')) existingValue = null;
+      } else {
+        existingValue = null;
+      }
+    }
 
-    // 1. From data object fields
+    // ── Step 2: Extract submission ID ──
+    let sid = null;
     if (data) {
       sid = data.sid || data.submissionID || data.submissionId
           || data.submission_id || data.submissionid || null;
       if (sid) sid = String(sid);
     }
-
-    // 2. Deep search in data JSON
     if (!sid) {
       try {
         const raw = JSON.stringify(data);
@@ -295,8 +305,6 @@ function setupJotform() {
         if (m) sid = m[1];
       } catch(e) {}
     }
-
-    // 3. From parent page URL  (jotform.com/edit/SUBMISSION_ID)
     if (!sid) {
       try {
         const url = window.parent.location.href;
@@ -304,29 +312,18 @@ function setupJotform() {
         if (m) sid = m[1];
       } catch(e) {}
     }
-
-    // 4. From postMessage / referrer
-    if (!sid) {
-      try {
-        const ref = document.referrer;
-        const m = ref.match(/\/edit\/(\d{10,})/);
-        if (m) sid = m[1];
-      } catch(e) {}
-    }
-
-    // 5. From widget iframe src params
-    if (!sid) {
-      try {
-        const src = window.location.href;
-        const m = src.match(/[?&](?:sid|submissionID|submission_id)=(\d{10,})/i);
-        if (m) sid = m[1];
-      } catch(e) {}
-    }
-
-    console.log('[JotForm ready] resolved sid:', sid);
+    console.log('[JotForm ready] sid:', sid, '| value found:', !!existingValue);
     window._jfSid = sid;
 
-    // ── Restore from localStorage (instant, no API needed) ──
+    // ── Step 3: Restore — value from ready event is most reliable ──
+    if (existingValue) {
+      console.log('[JotForm ready] restoring from ready event value:', existingValue.substring(0, 80));
+      if (sid) saveToLocalStorage(sid, existingValue);
+      restoreFromSummary(existingValue);
+      return;
+    }
+
+    // ── Step 4: Try localStorage ──
     const fromStorage = sid ? loadFromLocalStorage(sid) : null;
     if (fromStorage) {
       console.log('[JotForm ready] restoring from localStorage');
@@ -334,33 +331,28 @@ function setupJotform() {
       return;
     }
 
-    // Try DOM read immediately (field may already be populated)
+    // ── Step 5: Try DOM read (field pre-populated by JotForm) ──
     const restoredNow = tryReadExistingValue();
     if (restoredNow) return;
 
-    // If not found yet, the field may not be populated — try API as backup
+    // ── Step 6: API fallback ──
     if (sid && JOTFORM_API_KEY && JOTFORM_API_KEY !== 'YOUR_API_KEY_HERE') {
       const apiUrl = `https://api.jotform.com/submission/${sid}?apiKey=${JOTFORM_API_KEY}&nocache=${Date.now()}`;
       fetch(apiUrl, { mode: 'cors' })
         .then(r => r.json())
         .then(json => {
-          if (json?.responseCode !== 200) {
-            console.log('[JotForm API] non-200:', json?.responseCode);
-            return;
-          }
+          if (json?.responseCode !== 200) return;
           const answers = json?.content?.answers || {};
-          let saved = null;
           for (const key of Object.keys(answers)) {
             const v = answers[key]?.answer || answers[key]?.prettyFormat || '';
             if (typeof v === 'string' && v.includes('RENTAL TOTAL:')) {
-              saved = v.trim();
-              console.log('[JotForm API] found rental summary in field', key);
+              console.log('[JotForm API] found in field', key);
+              if (!state.items.length) {
+                saveToLocalStorage(sid, v.trim());
+                restoreFromSummary(v.trim());
+              }
               break;
             }
-          }
-          if (saved && !state.items.length) {
-            saveToLocalStorage(sid, saved);
-            restoreFromSummary(saved);
           }
         })
         .catch(err => console.log('[JotForm API] error:', err.message));
