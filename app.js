@@ -237,14 +237,174 @@ function init() {
   buildTrackedPanel();
   buildQuantityPanel();
   switchTab(state.activeTab);
-  renderItems();   // also calls updateJotform → blanks #input_115 on load
+  renderItems();
+}
 
-  if (window.JFCustomWidget) {
-    JFCustomWidget.subscribe('submit', function() {
-      updateJotform();
-      JFCustomWidget.sendSubmit({ valid: true, value: window.latestSubmissionText || '' });
+/* ─────────────────────────────────────────────
+   JOTFORM SETUP  (submit + ready/restore)
+   ───────────────────────────────────────────── */
+function setupJotform() {
+  if (typeof JFCustomWidget === 'undefined') return;
+
+  JFCustomWidget.subscribe('submit', function() {
+    updateJotform();
+    JFCustomWidget.sendSubmit({ valid: true, value: window.latestSubmissionText || '' });
+  });
+
+  JFCustomWidget.subscribe('ready', function(data) {
+    console.log('[JotForm ready] data:', JSON.stringify(data));
+
+    // Extract submission ID
+    let sid = null;
+    if (data) {
+      sid = data.sid || data.submissionID || data.submissionId || null;
+      if (sid) sid = String(sid);
+    }
+    if (!sid) {
+      try {
+        const m = JSON.stringify(data).match(/"sid"\s*:\s*"?(\d+)"?/);
+        if (m) sid = m[1];
+      } catch(e) {}
+    }
+    if (!sid) sid = getSubmissionId();
+    console.log('[JotForm ready] sid:', sid);
+    window._jfSid = sid;
+
+    // Try localStorage first (instant)
+    const fromStorage = sid ? loadFromLocalStorage(sid) : null;
+    if (fromStorage) {
+      console.log('[JotForm ready] restoring from localStorage');
+      restoreFromSummary(fromStorage);
+      return;
+    }
+
+    // Fetch saved value from JotForm API (field 115)
+    if (sid) {
+      console.log('[JotForm ready] fetching from JotForm API...');
+      const apiUrl = `https://api.jotform.com/submission/${sid}?apiKey=6b9359da26ff8421a11c7f9dca4553a9&nocache=${Date.now()}`;
+      fetch(apiUrl, { mode: 'cors' })
+        .then(r => r.json())
+        .then(json => {
+          console.log('[JotForm API] responseCode:', json?.responseCode);
+          const answer = json?.content?.answers?.['115'];
+          console.log('[JotForm API] field 115:', JSON.stringify(answer));
+          const saved = (answer?.answer && answer.answer.trim())
+            ? answer.answer.trim()
+            : (answer?.prettyFormat && answer.prettyFormat.trim())
+            ? answer.prettyFormat.trim()
+            : null;
+          if (saved) {
+            console.log('[JotForm API] restoring:', saved.substring(0, 80));
+            saveToLocalStorage(sid, saved);
+            restoreFromSummary(saved);
+          } else {
+            console.log('[JotForm API] no saved value in field 115');
+          }
+        })
+        .catch(err => console.log('[JotForm API] error:', err.message || err));
+    }
+  });
+}
+
+function getSubmissionId() {
+  try {
+    const parentUrl = window.parent.location.href;
+    const m = parentUrl.match(/\/edit\/(\d+)/);
+    if (m) return m[1];
+  } catch(e) {}
+  try {
+    const m = window.location.href.match(/[?&]sid=(\d+)/);
+    if (m) return m[1];
+  } catch(e) {}
+  return null;
+}
+
+function saveToLocalStorage(sid, text) {
+  if (!sid || !text) return;
+  try { localStorage.setItem('jf_rental_' + sid, text); } catch(e) {}
+}
+
+function loadFromLocalStorage(sid) {
+  if (!sid) return null;
+  try { return localStorage.getItem('jf_rental_' + sid) || null; } catch(e) { return null; }
+}
+
+/* ─────────────────────────────────────────────
+   RESTORE FROM SAVED SUMMARY
+   ───────────────────────────────────────────── */
+async function restoreFromSummary(text) {
+  // Wait for sheet data to be ready
+  if (!state.masterItems.length) {
+    await new Promise(resolve => {
+      const check = setInterval(() => {
+        if (state.masterItems.length) { clearInterval(check); resolve(); }
+      }, 100);
     });
   }
+
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  // Lines are either:
+  //   TRACKED:  "ITEM-NAME | Rental Rate @ ₱1,800.00 = ₱1,800.00"
+  //   TRACKED:  "ITEM-NAME | First User @ ₱2,500.00 = ₱2,500.00"
+  //   QUANTITY: "BOY-L x 3 @ ₱350.00 = ₱1,050.00"
+  //   FOOTER:   "RENTAL TOTAL: ₱..."
+
+  for (const line of lines) {
+    if (line.startsWith('RENTAL TOTAL:')) continue;
+
+    // ── Tracked item ──
+    // Format: "NAME | Pricing Label @ ₱RATE = ₱AMOUNT"
+    const trackedMatch = line.match(/^(.+?)\s*\|\s*(Rental Rate|First User)\s*@\s*₱([\d,]+\.?\d*)\s*=\s*₱([\d,]+\.?\d*)$/);
+    if (trackedMatch) {
+      const name         = trackedMatch[1].trim();
+      const pricingLabel = trackedMatch[2].trim();
+      const rate         = parseFloat(trackedMatch[3].replace(/,/g, ''));
+      const amount       = parseFloat(trackedMatch[4].replace(/,/g, ''));
+
+      // Find the item in masterItems
+      const masterItem = state.masterItems.find(i => i.type === 'TRACKED' && i.name === name);
+      if (masterItem) {
+        state.items.push({
+          id:           uid(),
+          category:     masterItem.category,
+          name:         masterItem.name,
+          rentalRate:   rate,
+          pricingLabel: pricingLabel,
+          quantity:     1,
+          amount:       amount,
+          type:         'TRACKED'
+        });
+      }
+      continue;
+    }
+
+    // ── Quantity item ──
+    // Format: "NAME x QTY @ ₱RATE = ₱AMOUNT"
+    const qtyMatch = line.match(/^(.+?)\s+x\s+(\d+)\s+@\s+₱([\d,]+\.?\d*)\s+=\s+₱([\d,]+\.?\d*)$/);
+    if (qtyMatch) {
+      const name   = qtyMatch[1].trim();
+      const qty    = parseInt(qtyMatch[2]);
+      const rate   = parseFloat(qtyMatch[3].replace(/,/g, ''));
+      const amount = parseFloat(qtyMatch[4].replace(/,/g, ''));
+
+      const masterItem = state.masterItems.find(i => i.type === 'QUANTITY' && i.name === name);
+      if (masterItem) {
+        state.items.push({
+          id:           uid(),
+          category:     masterItem.category,
+          name:         masterItem.name,
+          rentalRate:   rate,
+          pricingLabel: 'Rental Rate',
+          quantity:     qty,
+          amount:       amount,
+          type:         'QUANTITY'
+        });
+      }
+      continue;
+    }
+  }
+
+  renderItems();
 }
 
 /* ─────────────────────────────────────────────
@@ -712,6 +872,9 @@ function updateJotform() {
 
   window.latestSubmissionText = lines.join('\n');
 
+  // Save to localStorage for edit restore
+  if (window._jfSid) saveToLocalStorage(window._jfSid, window.latestSubmissionText);
+
   // Method 1: JFCustomWidget API
   if (window.JFCustomWidget && typeof JFCustomWidget.sendData === 'function') {
     JFCustomWidget.sendData({ value: window.latestSubmissionText });
@@ -737,4 +900,19 @@ function updateJotform() {
 /* ─────────────────────────────────────────────
    BOOT
    ───────────────────────────────────────────── */
-loadData();
+
+// Poll for JFCustomWidget (JotForm injects it asynchronously)
+const waitForJotform = () => new Promise(resolve => {
+  if (typeof JFCustomWidget !== 'undefined') { resolve(); return; }
+  const interval = setInterval(() => {
+    if (typeof JFCustomWidget !== 'undefined') { clearInterval(interval); resolve(); }
+  }, 50);
+  // Give up after 5s (standalone / preview mode)
+  setTimeout(() => { clearInterval(interval); resolve(); }, 5000);
+});
+
+(async () => {
+  await waitForJotform();
+  setupJotform();
+  await loadData();
+})();
