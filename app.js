@@ -215,6 +215,19 @@ async function loadData() {
       const text = window._pendingRestore;
       window._pendingRestore = null;
       await restoreFromSummary(text);
+    } else {
+      // Try reading existing value directly (handles edit links where ready event is unreliable)
+      const restored = tryReadExistingValue();
+      if (!restored) {
+        // Poll for up to 3 seconds in case JotForm populates the field after a delay
+        let attempts = 0;
+        const poll = setInterval(() => {
+          attempts++;
+          if (state.items.length || attempts > 15) { clearInterval(poll); return; }
+          const found = tryReadExistingValue();
+          if (found) clearInterval(poll);
+        }, 200);
+      }
     }
   } catch(e) {
     console.error('Failed to load from Google Sheets:', e);
@@ -321,56 +334,37 @@ function setupJotform() {
       return;
     }
 
-    // ── Restore from JotForm API ──
-    if (!sid) {
-      console.log('[JotForm ready] no sid found, cannot restore');
-      return;
-    }
-    if (!JOTFORM_API_KEY || JOTFORM_API_KEY === 'YOUR_API_KEY_HERE') {
-      console.warn('[JotForm API] API key not set — edit restoration requires your JotForm API key');
-      return;
-    }
+    // Try DOM read immediately (field may already be populated)
+    const restoredNow = tryReadExistingValue();
+    if (restoredNow) return;
 
-    console.log('[JotForm ready] fetching submission from API...');
-    const apiUrl = `https://api.jotform.com/submission/${sid}?apiKey=${JOTFORM_API_KEY}&nocache=${Date.now()}`;
-    fetch(apiUrl, { mode: 'cors' })
-      .then(r => r.json())
-      .then(json => {
-        console.log('[JotForm API] responseCode:', json?.responseCode, '| content keys:', Object.keys(json?.content || {}));
-        const answers = json?.content?.answers || {};
-        console.log('[JotForm API] all answer keys:', Object.keys(answers));
-
-        // Try field 115 first, then scan all fields for our rental summary format
-        let saved = null;
-        const tryField = (ans) => {
-          if (!ans) return null;
-          const v = ans.answer || ans.prettyFormat || '';
-          return (typeof v === 'string' && v.trim()) ? v.trim() : null;
-        };
-
-        saved = tryField(answers['115']);
-
-        // Fallback: scan all fields for one that looks like our output
-        if (!saved) {
+    // If not found yet, the field may not be populated — try API as backup
+    if (sid && JOTFORM_API_KEY && JOTFORM_API_KEY !== 'YOUR_API_KEY_HERE') {
+      const apiUrl = `https://api.jotform.com/submission/${sid}?apiKey=${JOTFORM_API_KEY}&nocache=${Date.now()}`;
+      fetch(apiUrl, { mode: 'cors' })
+        .then(r => r.json())
+        .then(json => {
+          if (json?.responseCode !== 200) {
+            console.log('[JotForm API] non-200:', json?.responseCode);
+            return;
+          }
+          const answers = json?.content?.answers || {};
+          let saved = null;
           for (const key of Object.keys(answers)) {
-            const candidate = tryField(answers[key]);
-            if (candidate && candidate.includes('RENTAL TOTAL:')) {
+            const v = answers[key]?.answer || answers[key]?.prettyFormat || '';
+            if (typeof v === 'string' && v.includes('RENTAL TOTAL:')) {
+              saved = v.trim();
               console.log('[JotForm API] found rental summary in field', key);
-              saved = candidate;
               break;
             }
           }
-        }
-
-        if (saved) {
-          console.log('[JotForm API] restoring:', saved.substring(0, 100));
-          saveToLocalStorage(sid, saved);
-          restoreFromSummary(saved);
-        } else {
-          console.log('[JotForm API] no rental summary found in submission');
-        }
-      })
-      .catch(err => console.log('[JotForm API] fetch error:', err.message || err));
+          if (saved && !state.items.length) {
+            saveToLocalStorage(sid, saved);
+            restoreFromSummary(saved);
+          }
+        })
+        .catch(err => console.log('[JotForm API] error:', err.message));
+    }
   });
 
   // Also listen for postMessage from JotForm parent (some versions send sid this way)
@@ -378,13 +372,96 @@ function setupJotform() {
     try {
       const msg = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
       if (!msg) return;
+
+      // Catch sid from postMessage
       const sid = msg.sid || msg.submissionID || msg.submissionId || msg.submission_id;
       if (sid && !window._jfSid) {
         console.log('[postMessage] got sid:', sid);
         window._jfSid = String(sid);
       }
+
+      // JotForm sometimes sends field values via postMessage on edit load
+      // Look for our rental summary in any string values
+      const raw = JSON.stringify(msg);
+      if (raw.includes('RENTAL TOTAL:') && !state.items.length) {
+        const m = raw.match(/"([^"]*RENTAL TOTAL:[^"]*)"/);
+        if (m) {
+          const text = m[1].replace(/\\n/g, '\n').replace(/\\u20b1/g, '₱');
+          console.log('[postMessage] found rental summary, restoring...');
+          restoreFromSummary(text);
+        }
+      }
     } catch(e) {}
   });
+}
+
+/* ─────────────────────────────────────────────
+   READ EXISTING VALUE FROM JOTFORM FIELD
+   Tries multiple methods to read #input_115
+   value when opening an edit link
+   ───────────────────────────────────────────── */
+function tryReadExistingValue() {
+  if (state.items.length) return true; // already restored
+
+  // Method A: JFCustomWidget.getValue() — proper edit-mode API
+  if (typeof JFCustomWidget !== 'undefined') {
+    try {
+      const val = JFCustomWidget.getValue();
+      console.log('[getValue] raw:', val ? val.substring(0, 80) : 'empty/null');
+      if (val && typeof val === 'string' && val.includes('RENTAL TOTAL:')) {
+        console.log('[getValue] restoring from widget value');
+        restoreFromSummary(val);
+        return true;
+      }
+      // Sometimes getValue returns an object with a value property
+      if (val && typeof val === 'object') {
+        const inner = val.value || val.answer || val.text || '';
+        if (inner && inner.includes('RENTAL TOTAL:')) {
+          console.log('[getValue] restoring from widget value object');
+          restoreFromSummary(inner);
+          return true;
+        }
+      }
+    } catch(e) { console.log('[getValue] error:', e.message); }
+  }
+
+  // Method B: Read from every textarea/input in parent docs that contains our data
+  const readFromDoc = (doc) => {
+    try {
+      // Try specific field id first
+      for (const sel of ['#input_115', 'textarea#input_115', '[name="q115_rentalSummary"]', '[id*="115"]']) {
+        const el = doc.querySelector(sel);
+        if (el) {
+          const v = el.value || el.textContent || '';
+          if (v.includes('RENTAL TOTAL:')) return v.trim();
+        }
+      }
+      // Scan ALL textareas for rental summary content
+      const allTA = doc.querySelectorAll('textarea, input[type="hidden"]');
+      for (const el of allTA) {
+        const v = el.value || '';
+        if (v.includes('RENTAL TOTAL:')) {
+          console.log('[DOM scan] found rental summary in', el.id || el.name || el.tagName);
+          return v.trim();
+        }
+      }
+    } catch(e) {}
+    return null;
+  };
+
+  for (const doc of [document, ...[window.parent?.document, window.top?.document].filter(Boolean)]) {
+    try {
+      const val = readFromDoc(doc);
+      if (val) {
+        console.log('[DOM read] restoring:', val.substring(0, 80));
+        restoreFromSummary(val);
+        return true;
+      }
+    } catch(e) {}
+  }
+
+  console.log('[tryReadExistingValue] no existing value found');
+  return false;
 }
 
 function saveToLocalStorage(sid, text) {
