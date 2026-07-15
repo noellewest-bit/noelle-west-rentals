@@ -844,6 +844,16 @@ function updateJotform() {
     }), '*');
   } catch(e) {}
 
+  // Ping Apps Script with grand total
+  try {
+    const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwJhhGu_5QfQYmOfswMNZPRGxnKD8PgU5DxKAI6DFCKgPUlU4gX7H-FKLOWoV6Ea65B/exec";
+    if (APPS_SCRIPT_URL !== "https://script.google.com/macros/s/AKfycbwJhhGu_5QfQYmOfswMNZPRGxnKD8PgU5DxKAI6DFCKgPUlU4gX7H-FKLOWoV6Ea65B/exec") {
+      let sid = sessionStorage.getItem("calc_session");
+      if (!sid) { sid = "s_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9); sessionStorage.setItem("calc_session", sid); }
+      fetch(`${APPS_SCRIPT_URL}?action=set&session=${sid}&source=rental&total=${grandTotal.toFixed(2)}`).catch(() => {});
+    }
+  } catch(e) {}
+
   // Method 1: JFCustomWidget API
   if (window.JFCustomWidget && typeof JFCustomWidget.sendData === 'function') {
     JFCustomWidget.sendData({ value: window.latestSubmissionText });
