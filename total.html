@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Rental Total Widget</title>
+  <script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
+  <style>* { margin:0; padding:0; box-sizing:border-box; } body { background:transparent; overflow:hidden; }</style>
+</head>
+<body>
+<div id="debug" style="font-size:10px;color:#999;padding:2px;">Total: 0.00</div>
+<script>
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwJhhGu_5QfQYmOfswMNZPRGxnKD8PgU5DxKAI6DFCKgPUlU4gX7H-FKLOWoV6Ea65B/exec";
+const CALC_TYPE = "rental";
+const API_KEY   = "6b9359da26ff8421a11c7f9dca4553a9";
+const FIELD_ID  = "135";
+
+window.latestTotal   = 0;
+window._loadId       = "load_" + Math.floor(Date.now() / 60000);
+window._pollInterval = null;
+
+function sendTotal(total) {
+  window.latestTotal = total;
+  const formatted = total.toFixed(2);
+  const dbg = document.getElementById("debug");
+  if (dbg) dbg.textContent = "Total: " + formatted;
+  console.log("[" + CALC_TYPE + "Total] sending:", formatted);
+  if (typeof JFCustomWidget !== "undefined") {
+    try { JFCustomWidget.sendData({ value: formatted }); } catch(e) {}
+  }
+}
+
+async function pollTotal() {
+  try {
+    const url = APPS_SCRIPT_URL + "?action=get&type=" + CALC_TYPE + "&load_id=" + window._loadId + "&nocache=" + Date.now();
+    const res  = await fetch(url);
+    const data = await res.json();
+    const total = parseFloat(data.total) || 0;
+    if (total !== window.latestTotal) sendTotal(total);
+  } catch(e) {}
+}
+
+function getSubmissionId(data) {
+  let sid = null;
+  if (data) { sid = data.sid || data.submissionID || null; if (sid) sid = String(sid); }
+  if (!sid) { try { const m = JSON.stringify(data).match(/"sid"\s*:\s*"?(\d+)"?/); if (m) sid = m[1]; } catch(e) {} }
+  if (!sid) { try { const m = window.parent.location.href.match(/\/edit\/(\d+)/); if (m) sid = m[1]; } catch(e) {} }
+  return sid;
+}
+
+async function fetchFromApi(sid) {
+  try {
+    const res  = await fetch("https://api.jotform.com/submission/" + sid + "?apiKey=" + API_KEY + "&nocache=" + Date.now());
+    const json = await res.json();
+    const answer = json?.content?.answers?.[FIELD_ID]?.answer || "";
+    let total = 0;
+    
+    const rt = answer.split("\n").find(l => l.includes("RENTAL TOTAL"));
+    if (rt) total = parseFloat(rt.replace(/[^0-9.]/g, "")) || 0;
+    await fetch(APPS_SCRIPT_URL + "?action=set&type=" + CALC_TYPE + "&load_id=" + window._loadId + "&total=" + total);
+    sendTotal(total);
+  } catch(err) {
+    console.log("[" + CALC_TYPE + "Total] API fetch failed:", err.message);
+    sendTotal(0);
+  }
+}
+
+document.addEventListener("DOMContentLoaded", async () => {
+  console.log("[" + CALC_TYPE + "Total] load_id:", window._loadId);
+  fetch(APPS_SCRIPT_URL + "?action=clear&type=" + CALC_TYPE + "&load_id=" + window._loadId).catch(() => {});
+  window._pollInterval = setInterval(pollTotal, 2000);
+
+  const waitForJotform = () => new Promise(resolve => {
+    if (typeof JFCustomWidget !== "undefined") { resolve(); return; }
+    const interval = setInterval(() => { if (typeof JFCustomWidget !== "undefined") { clearInterval(interval); resolve(); } }, 50);
+    setTimeout(() => { clearInterval(interval); resolve(); }, 5000);
+  });
+
+  await waitForJotform();
+  if (typeof JFCustomWidget === "undefined") return;
+
+  JFCustomWidget.subscribe("submit", () => {
+    fetch(APPS_SCRIPT_URL + "?action=clear&type=" + CALC_TYPE + "&load_id=" + window._loadId).catch(() => {});
+    JFCustomWidget.sendSubmit({ valid: true, value: window.latestTotal.toFixed(2) });
+  });
+
+  JFCustomWidget.subscribe("ready", async function(data) {
+    const sid = getSubmissionId(data);
+    console.log("[" + CALC_TYPE + "Total] sid:", sid);
+    if (sid) {
+      await fetchFromApi(sid);
+    } else {
+      sendTotal(0);
+    }
+  });
+});
+</script>
+</body>
+</html>
