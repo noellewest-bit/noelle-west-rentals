@@ -847,8 +847,7 @@ function updateJotform() {
   // Ping Apps Script with grand total
   try {
     const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwJhhGu_5QfQYmOfswMNZPRGxnKD8PgU5DxKAI6DFCKgPUlU4gX7H-FKLOWoV6Ea65B/exec";
-    let sid = sessionStorage.getItem("calc_session");
-    if (!sid) { sid = "s_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9); sessionStorage.setItem("calc_session", sid); }
+    let sid = "form_242352946598066";
     console.log("[AppScript] rental pinging session:", sid, "total:", grandTotal.toFixed(2));
     fetch(`${APPS_SCRIPT_URL}?action=set&session=${sid}&source=rental&total=${grandTotal.toFixed(2)}`)
       .then(r => r.json())
