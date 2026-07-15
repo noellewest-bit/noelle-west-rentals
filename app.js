@@ -834,6 +834,16 @@ function updateJotform() {
   // Save to localStorage for edit restore
   if (window._jfSid) saveToLocalStorage(window._jfSid, window.latestSubmissionText);
 
+  // Broadcast grand total to total widget
+  try {
+    window.parent.postMessage(JSON.stringify({
+      type: 'widgetValue', valid: true,
+      value: window.latestSubmissionText,
+      grandTotal: grandTotal.toFixed(2),
+      source: 'rental_calculator'
+    }), '*');
+  } catch(e) {}
+
   // Method 1: JFCustomWidget API
   if (window.JFCustomWidget && typeof JFCustomWidget.sendData === 'function') {
     JFCustomWidget.sendData({ value: window.latestSubmissionText });
