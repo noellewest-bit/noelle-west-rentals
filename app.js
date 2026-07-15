@@ -836,7 +836,7 @@ function updateJotform() {
 
   // Broadcast grand total to total widget
   try {
-    window.parent.postMessage(JSON.stringify({
+    window.top.postMessage(JSON.stringify({
       type: 'widgetValue', valid: true,
       value: window.latestSubmissionText,
       grandTotal: grandTotal.toFixed(2),
